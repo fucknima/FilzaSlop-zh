@@ -31,7 +31,7 @@ static BOOL PBSetError(NSError **error, NSInteger code, NSString *format, ...)
         NSString *message = [[NSString alloc] initWithFormat:format arguments:arguments];
         va_end(arguments);
         *error = [NSError errorWithDomain:PBErrorDomain code:code
-            userInfo:@{NSLocalizedDescriptionKey: message ?: @"PosterBoard operation failed"}];
+            userInfo:@{NSLocalizedDescriptionKey: message ?: @"PosterBoard 操作失败"}];
     }
     return NO;
 }
@@ -82,10 +82,10 @@ static BOOL PBDirectoryNoSymlink(NSString *path, BOOL requireExisting, NSError *
     struct stat status = {0};
     if (lstat(path.fileSystemRepresentation, &status) != 0) {
         if (errno == ENOENT && !requireExisting) return YES;
-        return PBSetError(error, errno, @"Cannot inspect directory %@ (errno %d)", path, errno);
+        return PBSetError(error, errno, @"无法检查目录 %@（错误码 %d）", path, errno);
     }
     if (!S_ISDIR(status.st_mode))
-        return PBSetError(error, EINVAL, @"Expected a real directory at %@", path);
+        return PBSetError(error, EINVAL, @"%@ 不是有效目录", path);
     return YES;
 }
 
@@ -93,7 +93,7 @@ static NSArray<NSString *> *PBDirectoryNames(NSString *path, NSError **error)
 {
     DIR *directory = opendir(path.fileSystemRepresentation);
     if (!directory) {
-        PBSetError(error, errno, @"Cannot open %@ (errno %d)", path, errno);
+        PBSetError(error, errno, @"无法打开 %@（错误码 %d）", path, errno);
         return nil;
     }
     NSMutableArray<NSString *> *names = [NSMutableArray array];
@@ -104,7 +104,7 @@ static NSArray<NSString *> *PBDirectoryNames(NSString *path, NSError **error)
         NSString *name = [NSString stringWithUTF8String:entry->d_name];
         if (!name || !PBSafeName(name)) {
             closedir(directory);
-            PBSetError(error, EINVAL, @"Directory contains an unsupported file name: %@", path);
+            PBSetError(error, EINVAL, @"目录包含不支持的文件名：%@", path);
             return nil;
         }
         [names addObject:name];
@@ -112,7 +112,7 @@ static NSArray<NSString *> *PBDirectoryNames(NSString *path, NSError **error)
     int readError = errno;
     closedir(directory);
     if (readError) {
-        PBSetError(error, readError, @"Failed while reading %@ (errno %d)", path, readError);
+        PBSetError(error, readError, @"读取 %@ 时失败（错误码 %d）", path, readError);
         return nil;
     }
     return [names sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
@@ -122,7 +122,7 @@ static BOOL PBScanTreeRecursive(NSString *base, NSString *relative, NSUInteger d
                                 NSMutableArray<NSDictionary *> *entries,
                                 PBTreeStats *stats, NSError **error)
 {
-    if (depth > 32) return PBSetError(error, ELOOP, @"Package tree is deeper than 32 levels");
+    if (depth > 32) return PBSetError(error, ELOOP, @"包目录超过 32 层深度");
     NSString *directory = relative.length ? [base stringByAppendingPathComponent:relative] : base;
     NSArray<NSString *> *names = PBDirectoryNames(directory, error);
     if (!names) return NO;
@@ -133,25 +133,25 @@ static BOOL PBScanTreeRecursive(NSString *base, NSString *relative, NSUInteger d
         NSString *child = [base stringByAppendingPathComponent:childRelative];
         struct stat status = {0};
         if (lstat(child.fileSystemRepresentation, &status) != 0)
-            return PBSetError(error, errno, @"Cannot inspect %@ (errno %d)", child, errno);
+            return PBSetError(error, errno, @"无法检查 %@（错误码 %d）", child, errno);
         if (S_ISDIR(status.st_mode)) {
             stats->directories++;
             [entries addObject:@{@"Path": childRelative, @"Directory": @YES}];
             if (!PBScanTreeRecursive(base, childRelative, depth + 1, entries, stats, error))
                 return NO;
         } else if (S_ISREG(status.st_mode)) {
-            if (status.st_size < 0) return PBSetError(error, EINVAL, @"Invalid file size at %@", child);
+            if (status.st_size < 0) return PBSetError(error, EINVAL, @"%@ 的文件大小无效", child);
             stats->files++;
             stats->bytes += (unsigned long long)status.st_size;
             if (stats->files > PBMaximumFiles || stats->bytes > PBMaximumBytes)
                 return PBSetError(error, EFBIG,
-                    @"Package exceeds the %lu-file or 256 MiB safety limit",
+                    @"包超过 %lu 个文件或 256 MiB 的安全限制",
                     (unsigned long)PBMaximumFiles);
             [entries addObject:@{@"Path": childRelative, @"Directory": @NO,
                                  @"Size": @((unsigned long long)status.st_size)}];
         } else {
             return PBSetError(error, EINVAL,
-                @"Package contains a link or special file, which is not allowed: %@", childRelative);
+                @"包包含不允许的链接或特殊文件：%@", childRelative);
         }
     }
     return YES;
@@ -173,19 +173,19 @@ static NSArray<NSDictionary *> *PBScanTree(NSString *root, PBTreeStats *stats,
 static BOOL PBCopyRegularFile(NSString *source, NSString *destination, NSError **error)
 {
     int input = open(source.fileSystemRepresentation, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (input < 0) return PBSetError(error, errno, @"Cannot open %@ (errno %d)", source, errno);
+    if (input < 0) return PBSetError(error, errno, @"无法打开 %@（错误码 %d）", source, errno);
     struct stat status = {0};
     if (fstat(input, &status) != 0 || !S_ISREG(status.st_mode)) {
         int saved = errno ?: EINVAL;
         close(input);
-        return PBSetError(error, saved, @"Source changed during import: %@", source);
+        return PBSetError(error, saved, @"导入期间源文件发生变化：%@", source);
     }
     int output = open(destination.fileSystemRepresentation,
         O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (output < 0) {
         int saved = errno;
         close(input);
-        return PBSetError(error, saved, @"Cannot create %@ (errno %d)", destination, saved);
+        return PBSetError(error, saved, @"无法创建 %@（错误码 %d）", destination, saved);
     }
     BOOL ok = YES;
     uint8_t buffer[64 * 1024];
@@ -194,7 +194,7 @@ static BOOL PBCopyRegularFile(NSString *source, NSString *destination, NSError *
         if (count == 0) break;
         if (count < 0) {
             if (errno == EINTR) continue;
-            ok = PBSetError(error, errno, @"Read failed for %@ (errno %d)", source, errno);
+            ok = PBSetError(error, errno, @"读取 %@ 失败（错误码 %d）", source, errno);
             break;
         }
         ssize_t offset = 0;
@@ -202,7 +202,7 @@ static BOOL PBCopyRegularFile(NSString *source, NSString *destination, NSError *
             ssize_t written = write(output, buffer + offset, (size_t)(count - offset));
             if (written < 0 && errno == EINTR) continue;
             if (written <= 0) {
-                ok = PBSetError(error, errno ?: EIO, @"Write failed for %@ (errno %d)",
+                ok = PBSetError(error, errno ?: EIO, @"写入 %@ 失败（错误码 %d）",
                     destination, errno ?: EIO);
                 break;
             }
@@ -211,7 +211,7 @@ static BOOL PBCopyRegularFile(NSString *source, NSString *destination, NSError *
         if (!ok) break;
     }
     if (ok && fsync(output) != 0)
-        ok = PBSetError(error, errno, @"Could not flush %@ (errno %d)", destination, errno);
+        ok = PBSetError(error, errno, @"无法刷新 %@（错误码 %d）", destination, errno);
     close(output);
     close(input);
     if (!ok) unlink(destination.fileSystemRepresentation);
@@ -222,13 +222,13 @@ static BOOL PBCopyTree(NSString *source, NSString *destination,
                        NSArray<NSDictionary *> *entries, NSError **error)
 {
     if (mkdir(destination.fileSystemRepresentation, 0700) != 0)
-        return PBSetError(error, errno, @"Cannot create staging directory %@ (errno %d)",
+        return PBSetError(error, errno, @"无法创建暂存目录 %@（错误码 %d）",
             destination, errno);
     for (NSDictionary *entry in entries) {
         if (![entry[@"Directory"] boolValue]) continue;
         NSString *path = [destination stringByAppendingPathComponent:entry[@"Path"]];
         if (mkdir(path.fileSystemRepresentation, 0700) != 0)
-            return PBSetError(error, errno, @"Cannot create directory %@ (errno %d)", path, errno);
+            return PBSetError(error, errno, @"无法创建目录 %@（错误码 %d）", path, errno);
     }
     for (NSDictionary *entry in entries) {
         if ([entry[@"Directory"] boolValue]) continue;
@@ -284,7 +284,7 @@ static BOOL PBRewriteDescriptor(NSString *root, NSInteger wallpaperIdentifier,
         id plist = [NSPropertyListSerialization propertyListWithData:data
             options:NSPropertyListMutableContainersAndLeaves format:&format error:error];
         if (![plist isKindOfClass:NSMutableDictionary.class])
-            return PBSetError(error, EINVAL, @"Expected a dictionary plist at %@", relative);
+            return PBSetError(error, EINVAL, @"%@ 不是字典类型的 plist", relative);
         NSMutableDictionary *dictionary = plist;
         if (userInfo) {
             dictionary[@"wallpaperRepresentingIdentifier"] = @(wallpaperIdentifier);
@@ -339,7 +339,7 @@ static NSString *PBTreeDigest(NSString *root, PBTreeStats *outStats, NSError **e
         NSString *path = [root stringByAppendingPathComponent:entry[@"Path"]];
         int descriptor = open(path.fileSystemRepresentation, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
         if (descriptor < 0) {
-            PBSetError(error, errno, @"Cannot hash %@ (errno %d)", path, errno);
+            PBSetError(error, errno, @"无法计算 %@ 的哈希（错误码 %d）", path, errno);
             return nil;
         }
         uint8_t buffer[64 * 1024];
@@ -349,7 +349,7 @@ static NSString *PBTreeDigest(NSString *root, PBTreeStats *outStats, NSError **e
             if (count == 0) break;
             if (count < 0 && errno == EINTR) continue;
             if (count < 0) {
-                ok = PBSetError(error, errno, @"Cannot hash %@ (errno %d)", path, errno);
+                ok = PBSetError(error, errno, @"无法计算 %@ 的哈希（错误码 %d）", path, errno);
                 break;
             }
             CC_SHA256_Update(&context, buffer, (CC_LONG)count);
@@ -367,7 +367,7 @@ static BOOL PBFindDescriptorContainers(NSString *directory, NSUInteger depth,
                                        NSMutableArray<NSString *> *containers,
                                        NSError **error)
 {
-    if (depth > 8) return PBSetError(error, ELOOP, @"Package search exceeded 8 levels");
+    if (depth > 8) return PBSetError(error, ELOOP, @"包搜索超过 8 层深度");
     NSString *lowerName = directory.lastPathComponent.lowercaseString;
     if ([lowerName containsString:@"descriptor"]) {
         [containers addObject:directory];
@@ -380,13 +380,13 @@ static BOOL PBFindDescriptorContainers(NSString *directory, NSUInteger depth,
         NSString *path = [directory stringByAppendingPathComponent:name];
         struct stat status = {0};
         if (lstat(path.fileSystemRepresentation, &status) != 0)
-            return PBSetError(error, errno, @"Cannot inspect %@ (errno %d)", path, errno);
+            return PBSetError(error, errno, @"无法检查 %@（错误码 %d）", path, errno);
         if (S_ISLNK(status.st_mode))
-            return PBSetError(error, EINVAL, @"Package links are not allowed: %@", path);
+            return PBSetError(error, EINVAL, @"不允许包中包含链接：%@", path);
         if (!S_ISDIR(status.st_mode)) continue;
         if ([name caseInsensitiveCompare:@"container"] == NSOrderedSame)
             return PBSetError(error, EPERM,
-                @"Unsafe container-style tendies are not supported. Use a descriptor package.");
+                @"不支持不安全的容器型 tendies 包，请使用描述符包。");
         if (!PBFindDescriptorContainers(path, depth + 1, containers, error)) return NO;
     }
     return YES;
@@ -409,7 +409,7 @@ static NSArray<NSDictionary *> *PBDiscoverDescriptors(NSString *package,
     if (!PBFindDescriptorContainers(package, 0, containers, error)) return nil;
     if (containers.count == 0) {
         PBSetError(error, ENOENT,
-            @"No descriptor or descriptors folder was found in %@", package.lastPathComponent);
+            @"在 %@ 中未找到 descriptor 或 descriptors 文件夹", package.lastPathComponent);
         return nil;
     }
     NSMutableArray<NSDictionary *> *descriptors = [NSMutableArray array];
@@ -422,33 +422,33 @@ static NSArray<NSDictionary *> *PBDiscoverDescriptors(NSString *package,
             NSString *source = [container stringByAppendingPathComponent:name];
             struct stat status = {0};
             if (lstat(source.fileSystemRepresentation, &status) != 0) {
-                PBSetError(error, errno, @"Cannot inspect %@ (errno %d)", source, errno);
+                PBSetError(error, errno, @"无法检查 %@（错误码 %d）", source, errno);
                 return nil;
             }
             if (!S_ISDIR(status.st_mode)) {
                 PBSetError(error, EINVAL,
-                    @"Descriptor folder contains an unexpected file: %@", source);
+                    @"描述符文件夹包含意外文件：%@", source);
                 return nil;
             }
             PBTreeStats stats = {0};
             NSArray *entries = PBScanTree(source, &stats, error);
             if (!entries) return nil;
             if (stats.files == 0) {
-                PBSetError(error, EINVAL, @"Descriptor is empty: %@", source);
+                PBSetError(error, EINVAL, @"描述符为空：%@", source);
                 return nil;
             }
             [descriptors addObject:@{@"Source": source, @"SourceName": name,
                 @"Provider": provider, @"Entries": entries,
                 @"FileCount": @(stats.files), @"ByteCount": @(stats.bytes)}];
             if (descriptors.count > PBMaximumDescriptors) {
-                PBSetError(error, E2BIG, @"A package may contain at most %lu descriptors",
+                PBSetError(error, E2BIG, @"一个包最多只能包含 %lu 个描述符",
                     (unsigned long)PBMaximumDescriptors);
                 return nil;
             }
         }
     }
     if (descriptors.count == 0) {
-        PBSetError(error, ENOENT, @"The package contains no descriptor directories");
+        PBSetError(error, ENOENT, @"包中不包含描述符目录");
         return nil;
     }
     return descriptors;
@@ -459,8 +459,8 @@ static NSDictionary *PBPosterBoardContext(NSError **error)
     NSString *activationError = nil;
     NSString *root = MCMFilzaDataContainerPath(PBPosterBoardIdentifier, &activationError);
     if (!root) {
-        PBSetError(error, EPERM, @"PosterBoard container activation failed: %@",
-            activationError ?: @"unknown error");
+        PBSetError(error, EPERM, @"PosterBoard 容器激活失败：%@",
+            activationError ?: @"未知错误");
         return nil;
     }
     NSString *store = [root stringByAppendingPathComponent:
@@ -486,7 +486,7 @@ static NSDictionary *PBPosterBoardContext(NSError **error)
     }
     if (!selected)
         return PBSetError(error, ENOENT,
-            @"No numeric PosterBoard structure with an Extensions directory was found"), nil;
+            @"未找到带有 Extensions 目录的数字 PosterBoard 结构"), nil;
     NSString *extensions = [[store stringByAppendingPathComponent:selected]
         stringByAppendingPathComponent:@"Extensions"];
     return @{@"Root": root, @"Store": store, @"Structure": selected,
@@ -499,13 +499,13 @@ static BOOL PBEnsureTargetDirectory(NSString *path, NSMutableArray<NSString *> *
     struct stat status = {0};
     if (lstat(path.fileSystemRepresentation, &status) == 0) {
         if (!S_ISDIR(status.st_mode))
-            return PBSetError(error, EINVAL, @"Target is not a real directory: %@", path);
+            return PBSetError(error, EINVAL, @"目标不是有效目录：%@", path);
         return YES;
     }
     if (errno != ENOENT)
-        return PBSetError(error, errno, @"Cannot inspect target %@ (errno %d)", path, errno);
+        return PBSetError(error, errno, @"无法检查目标 %@（错误码 %d）", path, errno);
     if (mkdir(path.fileSystemRepresentation, 0700) != 0)
-        return PBSetError(error, errno, @"Cannot create target %@ (errno %d)", path, errno);
+        return PBSetError(error, errno, @"无法创建目标 %@（错误码 %d）", path, errno);
     [created addObject:path];
     return YES;
 }
@@ -539,12 +539,12 @@ static NSDictionary *PBApplyRefreshPreferences(NSDictionary *context,
     struct stat status = {0};
     int inspectResult = lstat(preferencePath.fileSystemRepresentation, &status);
     if (inspectResult != 0 && errno != ENOENT) {
-        PBSetError(error, errno, @"Cannot inspect PosterBoard refresh preferences (errno %d)", errno);
+        PBSetError(error, errno, @"无法检查 PosterBoard 刷新偏好设置（错误码 %d）", errno);
         return nil;
     }
     BOOL originalExisted = inspectResult == 0;
     if (originalExisted && !S_ISREG(status.st_mode)) {
-        PBSetError(error, EINVAL, @"PosterBoard refresh preference is not a regular file");
+        PBSetError(error, EINVAL, @"PosterBoard 刷新偏好设置不是普通文件");
         return nil;
     }
     NSData *original = nil;
@@ -560,7 +560,7 @@ static NSDictionary *PBApplyRefreshPreferences(NSDictionary *context,
         id plist = [NSPropertyListSerialization propertyListWithData:original
             options:NSPropertyListMutableContainersAndLeaves format:&format error:error];
         if (![plist isKindOfClass:NSMutableDictionary.class]) {
-            PBSetError(error, EINVAL, @"PosterBoard refresh preference is not a dictionary plist");
+            PBSetError(error, EINVAL, @"PosterBoard 刷新偏好设置不是字典类型的 plist");
             return nil;
         }
         preferences = plist;
@@ -605,7 +605,7 @@ static NSDictionary *PBApplyRefreshPreferences(NSDictionary *context,
             [[NSFileManager defaultManager] removeItemAtPath:preferencePath error:nil];
         if (backupPath.length) [[NSFileManager defaultManager] removeItemAtPath:backupPath error:nil];
         if (!error || !*error)
-            PBSetError(error, EIO, @"PosterBoard refresh preference verification failed");
+            PBSetError(error, EIO, @"PosterBoard 刷新偏好设置验证失败");
         return nil;
     }
     return @{
@@ -626,12 +626,12 @@ static BOOL PBRestoreRefreshPreferences(NSDictionary *record,
         @"Library/Preferences/com.apple.PosterBoard.unprotectedUserDefaults.plist"];
     NSString *path = [record[@"Path"] isKindOfClass:NSString.class] ? record[@"Path"] : nil;
     if (![path.stringByStandardizingPath isEqualToString:expectedPath.stringByStandardizingPath])
-        return PBSetError(error, EPERM, @"Refresh rollback contains an out-of-scope preference path");
+        return PBSetError(error, EPERM, @"刷新回滚包含超出范围的偏好设置路径");
     NSData *current = [NSData dataWithContentsOfFile:path
         options:NSDataReadingMappedIfSafe error:error];
     if (!current || ![PBDataDigest(current) isEqualToString:record[@"InstalledSHA256"]])
         return PBSetError(error, EBUSY,
-            @"Refusing preference rollback because PosterBoard changed the refresh file");
+            @"PosterBoard 已修改刷新文件，拒绝回滚偏好设置");
 
     if ([record[@"OriginalExisted"] boolValue]) {
         NSString *backupPath = [record[@"BackupPath"] isKindOfClass:NSString.class]
@@ -639,7 +639,7 @@ static BOOL PBRestoreRefreshPreferences(NSDictionary *record,
         NSData *backup = [NSData dataWithContentsOfFile:backupPath
             options:NSDataReadingMappedIfSafe error:error];
         if (!backup || ![PBDataDigest(backup) isEqualToString:record[@"OriginalSHA256"]])
-            return PBSetError(error, EINVAL, @"PosterBoard preference backup failed verification");
+            return PBSetError(error, EINVAL, @"PosterBoard 偏好设置备份验证失败");
         if (![backup writeToFile:path options:NSDataWritingAtomic error:error]) return NO;
     } else if (![[NSFileManager defaultManager] removeItemAtPath:path error:error]) {
         return NO;
@@ -695,7 +695,7 @@ static NSString *PBImportPackage(NSString *package, NSError **outError)
         if (!digest) break;
         if (renameatx_np(AT_FDCWD, staging.fileSystemRepresentation,
                         AT_FDCWD, target.fileSystemRepresentation, RENAME_EXCL) != 0) {
-            PBSetError(&error, errno, @"Could not commit descriptor %@ (errno %d)", uuid, errno);
+            PBSetError(&error, errno, @"无法提交描述符 %@（错误码 %d）", uuid, errno);
             break;
         }
         [stagingPaths removeObject:staging];
@@ -741,7 +741,7 @@ static NSString *PBImportPackage(NSString *package, NSError **outError)
         for (NSString *path in stagingPaths) PBRemoveTree(path);
         for (NSString *path in installedPaths.reverseObjectEnumerator) PBRemoveTree(path);
         PBCleanupEmptyDirectories(createdParents);
-        if (!error) PBSetError(&error, EIO, @"Import transaction did not complete");
+        if (!error) PBSetError(&error, EIO, @"导入事务未完成");
         if (outError) *outError = error;
         return nil;
     }
@@ -779,7 +779,7 @@ static NSString *PBRollBackLatest(NSError **outError)
 {
     NSString *manifestPath = PBManifestPaths().firstObject;
     if (!manifestPath) {
-        PBSetError(outError, ENOENT, @"There is no installed wallpaper transaction to roll back");
+        PBSetError(outError, ENOENT, @"没有可回滚的已安装壁纸事务");
         return nil;
     }
     NSDictionary *manifest = [NSDictionary dictionaryWithContentsOfFile:manifestPath];
@@ -787,7 +787,7 @@ static NSString *PBRollBackLatest(NSError **outError)
         ? manifest[@"Entries"] : nil;
     if ((![[manifest objectForKey:@"Version"] isEqual:@1] &&
          ![[manifest objectForKey:@"Version"] isEqual:@2]) || entries.count == 0) {
-        PBSetError(outError, EINVAL, @"The newest rollback manifest is invalid");
+        PBSetError(outError, EINVAL, @"最新的回滚清单无效");
         return nil;
     }
     NSError *error = nil;
@@ -807,14 +807,14 @@ static NSString *PBRollBackLatest(NSError **outError)
             !PBPathIsInside(descriptorRoot, context[@"Extensions"]) ||
             ![target.stringByStandardizingPath isEqualToString:
                 [descriptorRoot stringByAppendingPathComponent:uuid].stringByStandardizingPath]) {
-            PBSetError(outError, EPERM, @"Rollback manifest contains an out-of-scope target");
+            PBSetError(outError, EPERM, @"回滚清单包含超出范围的目标");
             return nil;
         }
         PBTreeStats stats = {0};
         NSString *digest = PBTreeDigest(target, &stats, &error);
         if (!digest || ![digest isEqualToString:entry[@"SHA256"]]) {
             if (!error) PBSetError(&error, EBUSY,
-                @"Refusing rollback because %@ changed after import", target.lastPathComponent);
+                @"%@ 在导入后发生变化，拒绝回滚", target.lastPathComponent);
             if (outError) *outError = error;
             return nil;
         }
@@ -842,7 +842,7 @@ static NSString *PBRollBackLatest(NSError **outError)
     }
     if (removed != entries.count) {
         if (outError) *outError = error ?: [NSError errorWithDomain:PBErrorDomain code:EIO
-            userInfo:@{NSLocalizedDescriptionKey: @"Rollback stopped before all descriptors were removed"}];
+            userInfo:@{NSLocalizedDescriptionKey: @"回滚在移除所有描述符前停止"}];
         return nil;
     }
     PBCleanupEmptyDirectories(manifest[@"CreatedParents"] ?: @[]);
