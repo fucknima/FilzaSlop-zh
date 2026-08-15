@@ -269,7 +269,7 @@ static id hook_unZipFile(id self, SEL _cmd, id zipPath, id toPath, id currentDir
             zipPathStr = [zipPath performSelector:NSSelectorFromString(@"filePath")];
 
         unzFile64 uf = p_unzOpen64(((NSString *)zipPathStr).UTF8String);
-        if (!uf) { if (outMsg) *outMsg = @"Failed to open zip"; return nil; }
+        if (!uf) { if (outMsg) *outMsg = @"打开 ZIP 失败"; return nil; }
 
         NSFileManager *fm = [NSFileManager defaultManager];
         NSString *destPath = toPath;
@@ -302,7 +302,7 @@ static id hook_unZipFile(id self, SEL _cmd, id zipPath, id toPath, id currentDir
         }
         p_unzClose(uf);
 
-        if (outMsg) *outMsg = @"OK";
+        if (outMsg) *outMsg = @"完成";
 
         // Return array of extracted FileItems (matching original behavior)
         NSArray *contents = [fm contentsOfDirectoryAtPath:destPath error:nil];
@@ -598,8 +598,26 @@ static void hook_activationViewDidLoad(id self, SEL _cmd) {
 static void setPastePOSIXError(NSError **error, int code,
                                NSString *operation, NSString *path) {
     if (!error) return;
-    NSString *description = [NSString stringWithFormat:@"%@ failed for %@: %s",
-        operation, path, strerror(code)];
+    NSDictionary<NSString *, NSString *> *operationNames = @{
+        @"open source": @"打开源文件",
+        @"read": @"读取",
+        @"write": @"写入",
+        @"create directory": @"创建目录",
+        @"open directory": @"打开目录",
+        @"decode filename": @"解析文件名",
+        @"read symbolic link": @"读取符号链接",
+        @"create symbolic link": @"创建符号链接",
+        @"inspect source": @"检查源项目",
+        @"copy unsupported item": @"复制不支持的项目",
+        @"create destination": @"创建目标",
+        @"archive": @"归档",
+        @"delete": @"删除",
+        @"resolve paste item": @"解析粘贴项目",
+        @"paste directory into itself": @"将目录粘贴到自身",
+    };
+    NSString *operationName = operationNames[operation] ?: operation;
+    NSString *description = [NSString stringWithFormat:@"%@失败：%@：%s",
+        operationName, path, strerror(code)];
     *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:code
         userInfo:@{NSLocalizedDescriptionKey: description}];
 }
@@ -934,7 +952,7 @@ static void archiveSelectedItems(id controller, NSArray *indexPaths) {
             } else if (pathIsInsideArchive(source)) {
                 error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EINVAL
                     userInfo:@{NSLocalizedDescriptionKey:
-                        [NSString stringWithFormat:@"%@ is already in FilzaSlop Archive.",
+                        [NSString stringWithFormat:@"%@ 已经位于 FilzaSlop Archive 中。",
                             source.lastPathComponent]}];
             } else {
                 NSString *destination = uniqueArchiveDestination(
@@ -1053,8 +1071,8 @@ static void hook_fileSystemAskDeleteItems(id self, SEL _cmd, NSArray *indexPaths
           NSStringFromClass([self class]), (unsigned long)items.count);
 
     NSString *message = items.count == 1
-        ? @"FilzaSlop cannot use Filza's Trash here. Archive moves this item to Documents/FilzaSlop Archive. Delete Permanently cannot be undone."
-        : @"FilzaSlop cannot use Filza's Trash here. Archive moves these items to Documents/FilzaSlop Archive. Delete Permanently cannot be undone.";
+        ? @"FilzaSlop 在这里无法使用 Filza 的废纸篓。归档会将此项目移动到 Documents/FilzaSlop Archive。永久删除后无法撤销。"
+        : @"FilzaSlop 在这里无法使用 Filza 的废纸篓。归档会将这些项目移动到 Documents/FilzaSlop Archive。永久删除后无法撤销。";
     UIAlertController *sheet = [UIAlertController
         alertControllerWithTitle:@"移除项目？"
         message:message preferredStyle:UIAlertControllerStyleActionSheet];
