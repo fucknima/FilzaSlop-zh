@@ -746,9 +746,8 @@ static NSString *PBImportPackage(NSString *package, NSError **outError)
         return nil;
     }
     return [NSString stringWithFormat:
-        @"Imported %lu descriptor%@ into PosterBoard structure %@ and applied the backed-up refresh preferences. Open Settings > Wallpaper.",
-        (unsigned long)manifestEntries.count, manifestEntries.count == 1 ? @"" : @"s",
-        context[@"Structure"]];
+        @"已将 %lu 个描述符导入 PosterBoard 结构 %@，并应用了已备份的刷新偏好设置。请打开「设置 > 壁纸」查看。",
+        (unsigned long)manifestEntries.count, context[@"Structure"]];
 }
 
 static NSArray<NSString *> *PBManifestPaths(void)
@@ -854,8 +853,8 @@ static NSString *PBRollBackLatest(NSError **outError)
     report[@"RolledBackAt"] = NSDate.date;
     PBWriteManifest(report, reportPath, nil);
     [[NSFileManager defaultManager] removeItemAtPath:manifestPath error:nil];
-    return [NSString stringWithFormat:@"Removed %lu imported descriptor%@ and restored the refresh preferences.",
-        (unsigned long)removed, removed == 1 ? @"" : @"s"];
+    return [NSString stringWithFormat:@"已移除 %lu 个已导入的描述符并恢复了刷新偏好设置。",
+        (unsigned long)removed];
 }
 
 static NSString *PBInspection(NSError **outError)
@@ -872,7 +871,7 @@ static NSString *PBInspection(NSError **outError)
         @"com.apple.MercuryPoster",
     ];
     NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:
-        [NSString stringWithFormat:@"Active structure: %@", context[@"Structure"]]];
+        [NSString stringWithFormat:@"活动结构：%@", context[@"Structure"]]];
     for (NSString *provider in providers) {
         NSString *path = [[context[@"Extensions"] stringByAppendingPathComponent:provider]
             stringByAppendingPathComponent:@"descriptors"];
@@ -884,10 +883,10 @@ static NSString *PBInspection(NSError **outError)
             if (lstat(child.fileSystemRepresentation, &status) == 0 && S_ISDIR(status.st_mode))
                 count++;
         }
-        [lines addObject:[NSString stringWithFormat:@"%@: %lu descriptors",
+        [lines addObject:[NSString stringWithFormat:@"%@：%lu 个描述符",
             provider.lastPathComponent, (unsigned long)count]];
     }
-    [lines addObject:@"Inspection is read-only."];
+    [lines addObject:@"检查为只读操作。"];
     return [lines componentsJoinedByString:@"\n"];
 }
 
@@ -943,7 +942,7 @@ static void PBStartAutomaticCipherImport(void)
             if ([manifest[@"Status"] isEqualToString:@"installed"] &&
                 [manifest[@"Version"] isEqual:@2] &&
                 [manifest[@"Package"] isEqualToString:package.lastPathComponent]) {
-                NSString *message = @"Cipher was already imported with refresh preferences. Open Settings > Wallpaper.";
+                NSString *message = @"Cipher 已随刷新偏好设置导入。请打开「设置 > 壁纸」查看。";
                 NSDictionary *report = @{@"Version": @1, @"Package": package.lastPathComponent,
                     @"Status": @"success", @"AttemptedAt": NSDate.date, @"Message": message};
                 PBWriteManifest(report, reportPath, nil);
@@ -1028,7 +1027,7 @@ static UIViewController *PBTopController(UIViewController *controller)
     if (!presenter) return;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
         message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
@@ -1038,8 +1037,8 @@ static UIViewController *PBTopController(UIViewController *controller)
         NSError *error = nil;
         NSString *message = block(&error);
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self showAlertWithTitle:message ? title : @"Wallpaper operation failed"
-                message:message ?: error.localizedDescription ?: @"Unknown error"];
+            [self showAlertWithTitle:message ? title : @"壁纸操作失败"
+                message:message ?: error.localizedDescription ?: @"未知错误"];
         });
     });
 }
@@ -1047,16 +1046,16 @@ static UIViewController *PBTopController(UIViewController *controller)
 - (void)confirmImport:(NSString *)package
 {
     UIViewController *presenter = PBTopController(self.presenter);
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Import wallpaper package?"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导入壁纸包？"
         message:[NSString stringWithFormat:
-            @"%@ will add only new descriptor directories. Existing PosterBoard files are not overwritten.",
+            @"%@ 只会添加新的描述符目录，不会覆盖现有的 PosterBoard 文件。",
             package.lastPathComponent]
         preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"Import" style:UIAlertActionStyleDefault
+    [alert addAction:[UIAlertAction actionWithTitle:@"导入" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) {
-            [weakSelf runOperationWithTitle:@"Wallpaper imported"
+            [weakSelf runOperationWithTitle:@"壁纸已导入"
                 block:^NSString *(NSError **error) { return PBImportPackage(package, error); }];
         }]];
     [presenter presentViewController:alert animated:YES completion:nil];
@@ -1065,14 +1064,14 @@ static UIViewController *PBTopController(UIViewController *controller)
 - (void)confirmRollback
 {
     UIViewController *presenter = PBTopController(self.presenter);
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Roll back last import?"
-        message:@"Rollback removes only descriptors from the newest Filza Mod manifest, and refuses if their hashes changed."
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"回滚上一次导入？"
+        message:@"回滚只会移除最新 Filza Mod 清单中的描述符；如果文件哈希已被修改，将拒绝回滚。"
         preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"Roll Back" style:UIAlertActionStyleDestructive
+    [alert addAction:[UIAlertAction actionWithTitle:@"回滚" style:UIAlertActionStyleDestructive
         handler:^(__unused UIAlertAction *action) {
-            [weakSelf runOperationWithTitle:@"Wallpaper rollback complete"
+            [weakSelf runOperationWithTitle:@"壁纸回滚完成"
                 block:^NSString *(NSError **error) { return PBRollBackLatest(error); }];
         }]];
     [presenter presentViewController:alert animated:YES completion:nil];
@@ -1082,34 +1081,34 @@ static UIViewController *PBTopController(UIViewController *controller)
 {
     UIViewController *presenter = PBTopController(self.presenter);
     if (!presenter) return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Wallpaper Lab"
-        message:@"Bounded Nugget-style PosterBoard descriptor import"
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"壁纸实验室"
+        message:@"受控的 Nugget 风格 PosterBoard 描述符导入"
         preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Inspect PosterBoard"
+    [sheet addAction:[UIAlertAction actionWithTitle:@"检查 PosterBoard"
         style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            [weakSelf runOperationWithTitle:@"PosterBoard inspection"
+            [weakSelf runOperationWithTitle:@"PosterBoard 检查"
                 block:^NSString *(NSError **error) { return PBInspection(error); }];
         }]];
     for (NSString *package in PBPackageDirectories()) {
         [sheet addAction:[UIAlertAction actionWithTitle:
-            [@"Import " stringByAppendingString:package.lastPathComponent]
+            [@"导入 " stringByAppendingString:package.lastPathComponent]
             style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
                 [weakSelf confirmImport:package];
             }]];
     }
     if (PBManifestPaths().count > 0) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Roll Back Last Import"
+        [sheet addAction:[UIAlertAction actionWithTitle:@"回滚上一次导入"
             style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
                 [weakSelf confirmRollback];
             }]];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Help" style:UIAlertActionStyleDefault
+    [sheet addAction:[UIAlertAction actionWithTitle:@"帮助" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) {
-            [weakSelf showAlertWithTitle:@"Wallpaper Lab"
-                message:@"Cipher imports automatically on first launch. Other extracted .tendies packages can be placed in [MHA-C2] Wallpaper Lab/Imports. Container-style packages are rejected. Imports are capped at 10 descriptors and 256 MiB. The refresh preference is backed up for rollback; the PosterBoard database is not changed."];
+            [weakSelf showAlertWithTitle:@"壁纸实验室"
+                message:@"Cipher 会在首次启动时自动导入。其他解压后的 .tendies 包可以放入 [MHA-C2] Wallpaper Lab/Imports。不支持容器型包。导入上限为 10 个描述符和 256 MiB。刷新偏好设置会先备份再应用，用于回滚；PosterBoard 数据库不会被修改。"];
         }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     sheet.popoverPresentationController.barButtonItem = sender;
     [presenter presentViewController:sheet animated:YES completion:nil];
 }
@@ -1155,7 +1154,7 @@ void PBWallpaperConfigureBrowser(UIViewController *controller, NSString *current
     [items removeObjectsAtIndexes:ours];
     if (visible) {
         feature.presenter = controller;
-        UIBarButtonItem *button = [[UIBarButtonItem alloc] initWithTitle:@"Wallpaper"
+        UIBarButtonItem *button = [[UIBarButtonItem alloc] initWithTitle:@"壁纸"
             style:UIBarButtonItemStylePlain target:feature action:@selector(showMenu:)];
         button.tag = PBButtonTag;
         // Filza continuously restores its Edit item. At the lab root the

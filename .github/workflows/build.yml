@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      base_ipa_url:
+        description: 'URL of a base unsigned Filza IPA (com.apple.mobile.MobileHouseArrest) to also build the release IPA'
+        required: false
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Theos
+        run: |
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+
+      - name: Build tweak
+        run: |
+          export THEOS="$HOME/theos"
+          make clean && make package FINALPACKAGE=1
+
+      - name: Upload dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: FilzaApplySandboxExt.dylib
+          path: .theos/obj/FilzaApplySandboxExt.dylib
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: FilzaApplySandboxExt.deb
+          path: packages/*.deb
+
+      - name: Build release IPA
+        if: inputs.base_ipa_url != ''
+        run: |
+          curl -L --fail -o /tmp/base.ipa "${{ inputs.base_ipa_url }}"
+          ./scripts/build_release_ipa.sh /tmp/base.ipa FilzaSlop-unsigned.ipa
+
+      - name: Upload IPA
+        if: inputs.base_ipa_url != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: FilzaSlop-unsigned.ipa
+          path: FilzaSlop-unsigned.ipa

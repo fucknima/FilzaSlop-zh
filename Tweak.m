@@ -780,13 +780,13 @@ static BOOL pasteDestinationIsInsideSource(NSString *source, NSString *destinati
 
 static void showPasteFailure(UIViewController *controller, NSArray<NSError *> *errors) {
     if (errors.count == 0) return;
-    NSString *message = errors.firstObject.localizedDescription ?: @"Paste failed";
+    NSString *message = errors.firstObject.localizedDescription ?: @"粘贴失败";
     if (errors.count > 1)
-        message = [NSString stringWithFormat:@"%lu items failed.\n%@",
+        message = [NSString stringWithFormat:@"%lu 个项目失败。\n%@",
             (unsigned long)errors.count, message];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Paste failed"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"粘贴失败"
         message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+    [alert addAction:[UIAlertAction actionWithTitle:@"好"
         style:UIAlertActionStyleDefault handler:nil]];
     [controller presentViewController:alert animated:YES completion:nil];
 }
@@ -827,13 +827,13 @@ static BOOL fileItemsUseMCMOperations(NSArray *items) {
 static void showDeleteFailure(UIViewController *controller,
                               NSArray<NSError *> *errors) {
     if (errors.count == 0 || ![controller isKindOfClass:UIViewController.class]) return;
-    NSString *message = errors.firstObject.localizedDescription ?: @"Delete failed";
+    NSString *message = errors.firstObject.localizedDescription ?: @"删除失败";
     if (errors.count > 1)
-        message = [NSString stringWithFormat:@"%lu items failed.\n%@",
+        message = [NSString stringWithFormat:@"%lu 个项目失败。\n%@",
             (unsigned long)errors.count, message];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Delete failed"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"删除失败"
         message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+    [alert addAction:[UIAlertAction actionWithTitle:@"好"
         style:UIAlertActionStyleDefault handler:nil]];
     [controller presentViewController:alert animated:YES completion:nil];
 }
@@ -848,18 +848,18 @@ static void showArchiveResult(UIViewController *controller, NSUInteger moved,
                               NSArray<NSError *> *errors) {
     if (![controller isKindOfClass:UIViewController.class]) return;
     NSString *title = moved > 0
-        ? (errors.count ? @"Archive completed with errors" : @"Archived")
-        : @"Archive failed";
+        ? (errors.count ? @"归档完成，但有错误" : @"已归档")
+        : @"归档失败";
     NSString *message = moved == 1
-        ? @"Moved 1 item to Documents/FilzaSlop Archive."
-        : [NSString stringWithFormat:@"Moved %lu items to Documents/FilzaSlop Archive.",
+        ? @"已将 1 个项目移动到 Documents/FilzaSlop Archive。"
+        : [NSString stringWithFormat:@"已将 %lu 个项目移动到 Documents/FilzaSlop Archive。",
             (unsigned long)moved];
     if (errors.count)
         message = [message stringByAppendingFormat:@"\n\n%@",
             errors.firstObject.localizedDescription];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
         message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+    [alert addAction:[UIAlertAction actionWithTitle:@"好"
         style:UIAlertActionStyleDefault handler:nil]];
     [controller presentViewController:alert animated:YES completion:nil];
 }
@@ -972,18 +972,18 @@ static void showPermanentDeleteConfirmation(id controller, NSArray *indexPaths,
         if (![activeController isKindOfClass:UIViewController.class]) return;
 
         NSString *message = itemCount == 1
-            ? @"This permanently deletes the item and cannot be undone. We recommend Archive first so you have a backup in Documents/FilzaSlop Archive."
-            : @"This permanently deletes the items and cannot be undone. We recommend Archive first so you have backups in Documents/FilzaSlop Archive.";
+            ? @"此操作将永久删除项目且无法撤销。建议先归档，将备份保存到 Documents/FilzaSlop Archive。"
+            : @"此操作将永久删除项目且无法撤销。建议先归档，将备份保存到 Documents/FilzaSlop Archive。";
         UIAlertController *alert = [UIAlertController
-            alertControllerWithTitle:@"Are you sure?" message:message
+            alertControllerWithTitle:@"确定要继续吗？" message:message
             preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Archive Instead"
+        [alert addAction:[UIAlertAction actionWithTitle:@"改为归档"
             style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
                 id selectedController = weakController;
                 if (selectedController)
                     archiveSelectedItems(selectedController, capturedIndexPaths);
             }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Delete Permanently"
+        [alert addAction:[UIAlertAction actionWithTitle:@"永久删除"
             style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
                 id selectedController = weakController;
                 if (!selectedController) return;
@@ -996,7 +996,7 @@ static void showPermanentDeleteConfirmation(id controller, NSArray *indexPaths,
                 ((void(*)(id, SEL, id, id))objc_msgSend)(
                     selectedController, eraseSelector, capturedIndexPaths, completion);
             }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+        [alert addAction:[UIAlertAction actionWithTitle:@"取消"
             style:UIAlertActionStyleCancel handler:nil]];
         [(UIViewController *)activeController presentViewController:alert
             animated:YES completion:nil];
@@ -1056,23 +1056,23 @@ static void hook_fileSystemAskDeleteItems(id self, SEL _cmd, NSArray *indexPaths
         ? @"FilzaSlop cannot use Filza's Trash here. Archive moves this item to Documents/FilzaSlop Archive. Delete Permanently cannot be undone."
         : @"FilzaSlop cannot use Filza's Trash here. Archive moves these items to Documents/FilzaSlop Archive. Delete Permanently cannot be undone.";
     UIAlertController *sheet = [UIAlertController
-        alertControllerWithTitle:items.count == 1 ? @"Remove item?" : @"Remove items?"
+        alertControllerWithTitle:@"移除项目？"
         message:message preferredStyle:UIAlertControllerStyleActionSheet];
 
     __weak id weakController = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Archive"
+    [sheet addAction:[UIAlertAction actionWithTitle:@"归档"
         style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
             id controller = weakController;
             if (controller) archiveSelectedItems(controller, capturedIndexPaths);
         }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Delete Permanently"
+    [sheet addAction:[UIAlertAction actionWithTitle:@"永久删除"
         style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
             id controller = weakController;
             if (!controller) return;
             showPermanentDeleteConfirmation(controller, capturedIndexPaths,
                                             items.count);
         }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
         style:UIAlertActionStyleCancel handler:nil]];
 
     UIPopoverPresentationController *popover = sheet.popoverPresentationController;
@@ -1567,7 +1567,7 @@ static BOOL repairActiveBrowserPath(void) {
     if (!insideRoot) {
         ((void(*)(id, SEL, id))objc_msgSend)(controller,
             setCurrentPathSelector, root);
-        controller.navigationItem.title = @"Device Storage";
+        controller.navigationItem.title = @"设备存储";
         NSLog(@"[DeviceStorage] repaired active browser path from %@ to %@ class=%@",
             currentPath, root, NSStringFromClass(controller.class));
     }
