@@ -1375,6 +1375,24 @@ static void MCMAppendUnifiedFindingMap(NSMutableString *map)
          "实验性章节还会显示每个已检查的子路径及其当前打开状态。\n\n"];
 }
 
+static NSString *MCMDisplayStorageName(NSString *name)
+{
+    NSDictionary<NSString *, NSString *> *names = @{
+        kMCMAppDataDirectoryName: @"[MHA-C2] 应用数据",
+        kMCMAppGroupsDirectoryName: @"[MHA-C7] 应用组",
+        kMCMExtensionDataDirectoryName: @"[MHA-C4] 扩展数据",
+        kMCMVPNDataDirectoryName: @"[MHA-C6] VPN 数据",
+        kMCMServiceDataDirectoryName: @"[MHA-C10] 服务数据",
+        kMCMSystemDataDirectoryName: @"[MHA-C12] 系统数据",
+        kMCMSystemGroupsDirectoryName: @"[MHA-C13] 系统组",
+        kMCMProtectedDataDirectoryName: @"[MHA-C15] 受保护数据",
+        kMCMAdditionalLocationsDirectoryName: @"[MHA-C13 Scoped] 其他位置",
+        kMCMExperimentalDirectoryName: @"[MHA-Mixed EXP] 实验性功能",
+        kMCMWallpaperLabDirectoryName: @"[MHA-C2] 壁纸实验室",
+    };
+    return names[name] ?: name;
+}
+
 static NSString *MCMSpringBoardPreferencesWriteCheck(void)
 {
     static const char *target =
@@ -1480,7 +1498,7 @@ static void MCMWriteAccessMap(NSFileManager *manager, NSString *root)
             ? MCMSymlinkAccessEntries(manager, directory) : @[];
 
         NSMutableString *section = [NSMutableString stringWithFormat:
-            @"%@\n原理：%@\n", name, primitive];
+            @"%@\n原理：%@\n", MCMDisplayStorageName(name), primitive];
         if (!present)
             [section appendString:@"状态：文件夹不存在；未启用根目录。\n"];
         else
@@ -1499,7 +1517,7 @@ static void MCMWriteAccessMap(NSFileManager *manager, NSString *root)
          "原理：通过 MHA-MCM class 2 查找 com.apple.PosterBoard 应用数据。\n"
          "状态：此文件夹用于本地暂存。只有执行壁纸实验室操作时才会访问 PosterBoard。\n"
          "潜在目标根目录：该操作返回的 class-2 com.apple.PosterBoard 数据容器。\n\n",
-        kMCMWallpaperLabDirectoryName];
+         MCMDisplayStorageName(kMCMWallpaperLabDirectoryName)];
     [map appendString:wallpaperSection];
     MCMWriteAccessReadme(manager, wallpaperDirectory, wallpaperSection);
 
