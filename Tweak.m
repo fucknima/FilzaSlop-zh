@@ -129,7 +129,7 @@ static void hook_fileSystemViewWillAppear(id self, SEL _cmd, BOOL animated) {
     UINavigationItem *item = [self respondsToSelector:@selector(navigationItem)]
         ? ((id(*)(id, SEL))objc_msgSend)(self, @selector(navigationItem)) : nil;
     if ([item.title isEqualToString:@"MCM Containers"])
-        item.title = @"Device Storage";
+        item.title = @"设备存储";
 
     SEL visiblePathSelector = NSSelectorFromString(@"currentPath");
     NSString *visiblePath = [self respondsToSelector:visiblePathSelector]
@@ -796,13 +796,13 @@ static BOOL pasteDestinationIsInsideSource(NSString *source, NSString *destinati
 
 static void showPasteFailure(UIViewController *controller, NSArray<NSError *> *errors) {
     if (errors.count == 0) return;
-    NSString *message = errors.firstObject.localizedDescription ?: @"Paste failed";
+    NSString *message = errors.firstObject.localizedDescription ?: @"粘贴失败";
     if (errors.count > 1)
         message = [NSString stringWithFormat:@"%lu items failed.\n%@",
             (unsigned long)errors.count, message];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Paste failed"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"粘贴失败"
         message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+    [alert addAction:[UIAlertAction actionWithTitle:@"好"
         style:UIAlertActionStyleDefault handler:nil]];
     [controller presentViewController:alert animated:YES completion:nil];
 }
@@ -834,13 +834,13 @@ static NSString *fileItemPath(id item) {
 static void showDeleteFailure(UIViewController *controller,
                               NSArray<NSError *> *errors) {
     if (errors.count == 0 || ![controller isKindOfClass:UIViewController.class]) return;
-    NSString *message = errors.firstObject.localizedDescription ?: @"Delete failed";
+    NSString *message = errors.firstObject.localizedDescription ?: @"删除失败";
     if (errors.count > 1)
         message = [NSString stringWithFormat:@"%lu items failed.\n%@",
             (unsigned long)errors.count, message];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Delete failed"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"删除失败"
         message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+    [alert addAction:[UIAlertAction actionWithTitle:@"好"
         style:UIAlertActionStyleDefault handler:nil]];
     [controller presentViewController:alert animated:YES completion:nil];
 }
@@ -1278,7 +1278,7 @@ static BOOL repairActiveBrowserPath(void) {
     if (!insideRoot) {
         ((void(*)(id, SEL, id))objc_msgSend)(controller,
             setCurrentPathSelector, root);
-        controller.navigationItem.title = @"Device Storage";
+        controller.navigationItem.title = @"设备存储";
         NSLog(@"[DeviceStorage] repaired active browser path from %@ to %@ class=%@",
             currentPath, root, NSStringFromClass(controller.class));
     }
