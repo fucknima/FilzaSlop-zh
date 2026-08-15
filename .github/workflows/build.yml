@@ -21,7 +21,9 @@ jobs:
           bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
 
       - name: Build tweak
-        run: make clean && make package FINALPACKAGE=1
+        run: |
+          export THEOS="$HOME/theos"
+          make clean && make package FINALPACKAGE=1
 
       - name: Upload dylib
         uses: actions/upload-artifact@v4
