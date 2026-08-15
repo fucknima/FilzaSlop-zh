@@ -13,18 +13,19 @@ on:
 jobs:
   build:
     runs-on: macos-14
-    env:
-      THEOS: ${{ runner.temp }}/theos
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Theos
         run: |
+          export THEOS="$RUNNER_TEMP/theos"
           git clone --depth 1 --recursive https://github.com/theos/theos "$THEOS"
           sudo "$THEOS/bootstrap.sh"
 
       - name: Build tweak
-        run: make clean && make package FINALPACKAGE=1
+        run: |
+          export THEOS="$RUNNER_TEMP/theos"
+          make clean && make package FINALPACKAGE=1
 
       - name: Upload dylib
         uses: actions/upload-artifact@v4
