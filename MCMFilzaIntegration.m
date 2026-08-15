@@ -467,11 +467,11 @@ static void MCMInstallLiveContainerRoot(void)
     for (NSArray<NSString *> *entry in links)
         MCMInstallLiveContainerLink(manager, root, entry[0], entry[1]);
 
-    NSString *readme = @"LiveContainer compatibility mode\n\n"
-        @"These links expose apps and data stored by this LiveContainer.\n"
-        @"Edits affect the live guest containers.\n\n"
-        @"The process still uses LiveContainer's signed identity. "
-         "It cannot receive MobileHouseArrest access to system app containers.\n";
+    NSString *readme = @"LiveContainer 兼容模式\n\n"
+        @"这些链接显示此 LiveContainer 存储的应用和数据。\n"
+        @"编辑会影响实时访客容器。\n\n"
+        @"进程仍使用 LiveContainer 的签名身份。"
+         "无法获得 MobileHouseArrest 对系统应用容器的访问权限。\n";
     MCMWriteGeneratedString(readme,
         [root stringByAppendingPathComponent:@"README.txt"]);
 }
@@ -632,15 +632,15 @@ static NSDictionary *MCMExperimentalPathStatus(NSString *path)
         result[@"Exists"] = @NO;
         result[@"Errno"] = @(savedErrno);
         result[@"Error"] = [NSString stringWithUTF8String:strerror(savedErrno)]
-            ?: @"unknown";
+            ?: @"未知错误";
         return result;
     }
 
     BOOL directory = S_ISDIR(status.st_mode);
     result[@"Exists"] = @YES;
-    result[@"Kind"] = directory ? @"directory" :
-        (S_ISREG(status.st_mode) ? @"file" :
-         (S_ISLNK(status.st_mode) ? @"symlink" : @"other"));
+    result[@"Kind"] = directory ? @"目录" :
+        (S_ISREG(status.st_mode) ? @"文件" :
+         (S_ISLNK(status.st_mode) ? @"符号链接" : @"其他"));
     result[@"Mode"] = [NSString stringWithFormat:@"%04o",
         status.st_mode & 07777];
     result[@"UID"] = @(status.st_uid);
@@ -680,7 +680,7 @@ static BOOL MCMInstallExperimentalSymlink(NSString *path, NSString *target,
     struct stat status = {0};
     if (lstat(path.fileSystemRepresentation, &status) == 0) {
         if (!S_ISLNK(status.st_mode)) {
-            if (error) *error = @"entry exists and is not a symlink";
+            if (error) *error = @"条目已存在且不是符号链接";
             return NO;
         }
         char current[PATH_MAX] = {0};
@@ -691,14 +691,14 @@ static BOOL MCMInstallExperimentalSymlink(NSString *path, NSString *target,
         if ([currentTarget isEqualToString:target]) return YES;
         if (unlink(path.fileSystemRepresentation) != 0) {
             if (error) *error = [NSString stringWithFormat:
-                @"stale symlink removal failed errno=%d", errno];
+                @"移除旧符号链接失败，错误码=%d", errno];
             return NO;
         }
     }
     if (symlink(target.fileSystemRepresentation,
                 path.fileSystemRepresentation) != 0) {
         if (error) *error = [NSString stringWithFormat:
-            @"symlink failed errno=%d", errno];
+            @"创建符号链接失败，错误码=%d", errno];
         return NO;
     }
     return YES;
@@ -785,18 +785,18 @@ static void MCMInstallFilesTraversalFolder(NSString *directory)
         result[@"Created"] = @(created);
         result[@"SourceAppTargetStatus"] =
             MCMExperimentalPathStatus(absoluteTarget);
-        if (!created) result[@"Error"] = detail ?: @"link creation failed";
+        if (!created) result[@"Error"] = detail ?: @"创建链接失败";
         [results addObject:result];
         NSLog(@"[MCMFilza] Files portal name=%@ relative=%@ created=%d detail=%@",
               name, relativeTarget, created, detail);
     }
 
-    NSString *readme = @"Files traversal portals\n\n"
-        @"Open these links through Apple Files, not through Filza:\n"
-        @"Files > On My iPhone > Filza Mod > Device Storage > Files Traversal\n\n"
-        @"Files resolves the relative links with its own authority. Filza remains sandboxed, so a portal can look blank or fail when opened inside Filza even when it works in Files.\n\n"
-        @"These links point to live data. Create, copy, rename, move, and delete operations in Files can change another app's real container. Viewing is safest. This folder does not install a .Trash link.\n\n"
-        @"Portal Results.plist records link targets and checks made by Filza itself. EPERM in SourceAppTargetStatus is expected and does not predict whether Files can open a portal. Best Effort entries may be rejected by Files.\n";
+    NSString *readme = @"Files 遍历入口\n\n"
+        @"请通过 Apple 文件访问这些链接，不要在 Filza 中打开：\n"
+        @"文件 > 在我的 iPhone 上 > Filza Mod > 设备存储 > Files Traversal\n\n"
+        @"Files 使用自己的权限解析相对链接。Filza 仍受沙盒限制，因此入口在 Files 中可用时，在 Filza 中可能显示为空或打开失败。\n\n"
+        @"这些链接指向实时数据。在 Files 中创建、复制、重命名、移动和删除会修改其他应用的真实容器。查看最安全。本文件夹不会创建 .Trash 链接。\n\n"
+        @"Portal Results.plist 记录链接目标和 Filza 自身的检查结果。SourceAppTargetStatus 中出现 EPERM 属于预期，不能据此判断 Files 是否可以打开入口。Best Effort 条目可能会被 Files 拒绝。\n";
     MCMWriteGeneratedString(readme,
         [directory stringByAppendingPathComponent:@"README.txt"]);
     MCMWriteGeneratedPropertyList(results, [directory
@@ -829,7 +829,7 @@ static NSDictionary *MCMRunExperimentalProbe(NSString *directory,
     if (!target) {
         MCMRemoveStaleExperimentalLink(linkPath);
         result[@"Status"] = @"failed";
-        result[@"Error"] = detail ?: @"activation failed";
+        result[@"Error"] = detail ?: @"激活失败";
         return result;
     }
 
@@ -851,7 +851,7 @@ static NSDictionary *MCMRunExperimentalProbe(NSString *directory,
     BOOL linked = MCMInstallExperimentalSymlink(linkPath, target, &linkError);
     result[@"Status"] = linked ? @"linked" : @"failed";
     result[@"LinkPath"] = linkPath;
-    if (!linked) result[@"Error"] = linkError ?: @"link creation failed";
+    if (!linked) result[@"Error"] = linkError ?: @"创建链接失败";
     NSLog(@"[MCMFilza] experimental name=%@ class=%llu id=%@ part=%llu domain=%@ status=%@ target=%@ error=%@",
           name, containerClass, identifier, part, partDomain,
           result[@"Status"], target, result[@"Error"]);
@@ -968,13 +968,13 @@ static void MCMInstallExperimentalFolder(NSString *directory)
     for (NSDictionary *probe in probes)
         [results addObject:MCMRunExperimentalProbe(directory, probe)];
 
-    NSString *readme = @"Experimental consumer traversal\n\n"
-        @"MHA means the MobileHouseArrest identity-trust bypass. C10, C12, C13, and C15 identify the ContainerManager class used by each link.\n"
-        @"These are fixed launch-time probes for daemon-consumed files found during the class 10/12/13/15 audit.\n"
-        @"A link appears only after ContainerManager returns a token, activation succeeds, and the returned directory opens read-only.\n"
-        @"Probe setup does not create or modify target files. The custom Filza copy/paste route is disabled inside this folder.\n"
-        @"The links still point at live directories; do not edit a candidate unless you have separately backed it up and planned an exact restore.\n\n"
-        @"Probe Results.plist records failed queries and the read/write/open status of each expected consumer path.\n";
+    NSString *readme = @"实验性消费者遍历\n\n"
+        @"MHA 表示 MobileHouseArrest 身份信任绕过。C10、C12、C13 和 C15 表示每个链接使用的 ContainerManager 类别。\n"
+        @"这些是 class 10/12/13/15 审计中发现的、供系统服务读取文件的固定启动探测。\n"
+        @"只有在 ContainerManager 返回令牌、激活成功且返回目录可以只读打开后，才会创建链接。\n"
+        @"探测设置不会创建或修改目标文件。本文件夹内已禁用 Filza 自定义复制/粘贴路径。\n"
+        @"链接仍指向实时目录；除非已单独备份并制定精确恢复方案，否则不要编辑候选文件。\n\n"
+        @"Probe Results.plist 记录查询失败信息，以及每个预期消费者路径的读/写/打开状态。\n";
     MCMWriteGeneratedString(readme,
         [directory stringByAppendingPathComponent:@"README.txt"]);
     MCMWriteGeneratedPropertyList(results, [directory
@@ -1227,14 +1227,14 @@ static NSDictionary *MCMCustomIdentifiers(void)
 static void MCMWriteInstructions(void)
 {
     NSString *path = [MCMFilzaVirtualRoot() stringByAppendingPathComponent:@"README.txt"];
-    NSString *text = @"Device storage research build\n\n"
-        @"MHA means the MobileHouseArrest identity-trust bypass. C2 through C15 identify the ContainerManager class used by each folder.\n"
-        @"[MHA-C2] App Data contains class-2 containers resolved from installed app identifiers.\n"
-        @"These are live private containers, not copies. Filza edits affect the target app.\n"
-        @"[MHA-Mixed EXP] Experimental contains fixed consumer traversal probes and records failures in Probe Results.plist.\n"
-        @"The custom copy/paste route is disabled there, but successful links still point to live directories.\n"
-        @"This build does not provide root, kernel R/W, arbitrary /var, Keychain, TCC, or app-bundle access.\n\n"
-        @"Optional target configuration is documented in the research source repository.\n";
+    NSString *text = @"设备存储研究构建\n\n"
+        @"MHA 表示 MobileHouseArrest 身份信任绕过。C2 到 C15 表示每个文件夹使用的 ContainerManager 类别。\n"
+        @"[MHA-C2] App Data 包含根据已安装应用标识解析出的 class-2 容器。\n"
+        @"这些是实时私有容器，不是副本。Filza 中的编辑会影响目标应用。\n"
+        @"[MHA-Mixed EXP] Experimental 包含固定的消费者遍历探测，并在 Probe Results.plist 中记录失败信息。\n"
+        @"其中已禁用自定义复制/粘贴路径，但成功的链接仍指向实时目录。\n"
+        @"此构建不提供 root、内核读写、任意 /var、Keychain、TCC 或应用包访问权限。\n\n"
+        @"可选目标配置记录在研究源码仓库中。\n";
     MCMWriteGeneratedString(text, path);
 }
 
@@ -1269,16 +1269,16 @@ static void MCMAppendSymlinkAccess(NSMutableString *text,
                                    NSArray<NSDictionary<NSString *, NSString *> *> *entries)
 {
     if (entries.count == 0) {
-        [text appendString:@"Enabled roots: none.\n"];
+        [text appendString:@"已启用的根目录：无。\n"];
         return;
     }
-    [text appendString:@"Enabled roots:\n"];
+    [text appendString:@"已启用的根目录：\n"];
     for (NSDictionary<NSString *, NSString *> *entry in entries) {
-        [text appendFormat:@"• %@\n  root: %@\n",
+        [text appendFormat:@"• %@\n  根目录：%@\n",
             entry[@"Name"], entry[@"Target"]];
     }
     [text appendString:
-        @"The sandbox extension covers each listed root. Descendant access still depends on filesystem and Data Protection controls.\n"];
+        @"沙盒扩展覆盖上面列出的每个根目录。对子目录的访问仍受文件系统和数据保护机制控制。\n"];
 }
 
 static void MCMAppendExperimentalSubpaths(NSMutableString *text,
@@ -1289,30 +1289,34 @@ static void MCMAppendExperimentalSubpaths(NSMutableString *text,
     NSArray<NSDictionary *> *results = [NSArray arrayWithContentsOfFile:resultsPath];
     if (results.count == 0) return;
 
-    [text appendString:@"\nExperimental returned paths and checked subpaths:\n"];
+    [text appendString:@"\n实验性功能返回的路径和已检查的子路径：\n"];
     for (NSDictionary *result in results) {
         NSString *name = [result[@"Name"] isKindOfClass:NSString.class]
-            ? result[@"Name"] : @"Unnamed probe";
+            ? result[@"Name"] : @"未命名探测";
         NSString *returnedPath = [result[@"ReturnedPath"] isKindOfClass:NSString.class]
             ? result[@"ReturnedPath"] : nil;
-        [text appendFormat:@"• %@ — status=%@\n", name,
-            result[@"Status"] ?: @"unknown"];
+        NSString *status = result[@"Status"];
+        if ([status isEqualToString:@"linked"]) status = @"已链接";
+        else if ([status isEqualToString:@"failed"]) status = @"失败";
+        else if (!status.length) status = @"未知";
+        [text appendFormat:@"• %@ — 状态：%@\n", name, status];
         if (returnedPath.length > 0)
-            [text appendFormat:@"  returned root: %@\n", returnedPath];
+            [text appendFormat:@"  返回的根目录：%@\n", returnedPath];
 
         NSArray<NSDictionary *> *subpaths =
             [result[@"ExpectedPathStatus"] isKindOfClass:NSArray.class]
                 ? result[@"ExpectedPathStatus"] : @[];
         for (NSDictionary *subpath in subpaths) {
             NSString *path = [subpath[@"Path"] isKindOfClass:NSString.class]
-                ? subpath[@"Path"] : @"<unknown>";
+                ? subpath[@"Path"] : @"<未知>";
+            NSString *exists = [subpath[@"Exists"] boolValue] ? @"是" : @"否";
+            NSString *readable = [subpath[@"Readable"] boolValue] ? @"是" : @"否";
+            NSString *writable = [subpath[@"Writable"] boolValue] ? @"是" : @"否";
+            NSString *open = [subpath[@"ReadOnlyOpen"] boolValue] ? @"是" : @"否";
             [text appendFormat:
-                @"  checked subpath: %@ — exists=%@ readable=%@ writable=%@ open=%@\n",
+                @"  已检查子路径：%@ — 存在=%@ 可读=%@ 可写=%@ 可打开=%@\n",
                 path,
-                [subpath[@"Exists"] boolValue] ? @"yes" : @"no",
-                [subpath[@"Readable"] boolValue] ? @"yes" : @"no",
-                [subpath[@"Writable"] boolValue] ? @"yes" : @"no",
-                [subpath[@"ReadOnlyOpen"] boolValue] ? @"yes" : @"no"];
+                exists, readable, writable, open];
         }
     }
 }
@@ -1332,43 +1336,43 @@ static void MCMWriteAccessReadme(NSFileManager *manager, NSString *directory,
 static void MCMAppendUnifiedFindingMap(NSMutableString *map)
 {
     [map appendString:
-        @"Root-cause map\n\n"
-         "Issue A — MobileHouseArrest identity-trust bypass\n"
-         "Component: MobileContainerManager and containermanagerd.\n"
-         "Trigger: the app has the signed code identifier com.apple.mobile.MobileHouseArrest.\n"
-         "Primitive: MobileContainerManager accepts that caller identity and issues foreign-container sandbox extensions.\n"
-         "Current 24A5390f proof: class-2 Safari, class-2 Notes, and class-7 Notes-group roots passed token activation and readdir. The stock-identity control denied all three targets. A nonexistent target was denied.\n"
-         "Relation: the labeled Filza folders below use this one identity-trust bypass with different container classes.\n\n"
+        @"根因图\n\n"
+         "问题 A —— MobileHouseArrest 身份信任绕过\n"
+         "组件：MobileContainerManager 和 containermanagerd。\n"
+         "触发条件：应用具有签名代码标识 com.apple.mobile.MobileHouseArrest。\n"
+         "原理：MobileContainerManager 接受该调用者身份，并签发其他容器的沙盒扩展。\n"
+         "当前 24A5390f 证据：class-2 Safari、class-2 Notes 和 class-7 Notes 组根目录均通过令牌激活和 readdir。普通身份控制组拒绝了全部三个目标，不存在的目标也被拒绝。\n"
+         "关联：下面标记的 Filza 文件夹使用同一个身份信任绕过，但对应不同的容器类别。\n\n"
 
-         "Issue B — built-in class-12 geod lookup and part-domain traversal\n"
-         "Component: MobileContainerManager and containermanagerd.\n"
-         "Trigger: class 12 with identifier com.apple.geod. ContainerManagerCommon includes geod in its built-in lookup-bypass list.\n"
-         "Current 24A5390f proof: container_system_path_for_identifier returned /private/var/containers/Data/System/com.apple.geod, and readdir listed Documents, Library, tmp, and the metadata plist. Opening the metadata plist still failed with EPERM.\n"
-         "Archived 24A5380h proof: class 12, part 3, flags 0x8100000000, and a traversal part-domain reached the MobileGestalt Caches directory. A 275-byte read-write extension allowed a chosen plist marker. The test restored the original inode and SHA-256.\n"
-         "Relation: this route does not require the MobileHouseArrest identity. The geod allow path and unchecked part-domain are separate authorization defects.\n\n"
+         "问题 B —— 内置 class-12 geod 查找和 part-domain 遍历\n"
+         "组件：MobileContainerManager 和 containermanagerd。\n"
+         "触发条件：class 12、标识 com.apple.geod。ContainerManagerCommon 将 geod 列入内置查找绕过列表。\n"
+         "当前 24A5390f 证据：container_system_path_for_identifier 返回 /private/var/containers/Data/System/com.apple.geod，readdir 列出了 Documents、Library、tmp 和元数据 plist。打开元数据 plist 仍因 EPERM 失败。\n"
+         "存档的 24A5380h 证据：class 12、part 3、flags 0x8100000000 和遍历 part-domain 到达 MobileGestalt Caches 目录。275 字节的读写扩展允许写入指定的 plist 标记，测试随后恢复了原始 inode 和 SHA-256。\n"
+         "关联：此路径不需要 MobileHouseArrest 身份。geod 允许路径和未检查的 part-domain 是两个独立的授权缺陷。\n\n"
 
-         "Issue C — class-13 well-known MobileGestalt group authorization gap\n"
-         "Component: MobileContainerManager and containermanagerd.\n"
-         "Trigger: class 13, group systemgroup.com.apple.mobilegestaltcache, part 3, and flags 0x8100000000.\n"
-         "Target root: /private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches\n"
-         "Target file: /private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist\n"
-         "Archived 24A5380h proof: an ordinary sandboxed caller received a 275-byte read-write extension. The caller installed a chosen CodexMCMWriteProof marker, verified the bytes, and restored the original inode and SHA-256.\n"
-         "Current 24A5390f boundary: simple system-group path and class-13 queries were denied. Those simple queries did not repeat the archived part-3 read-write request.\n"
-         "Relation: this authorization gap is separate from the MobileHouseArrest identity-trust bypass.\n\n"
+         "问题 C —— class-13 已知 MobileGestalt 组授权缺口\n"
+         "组件：MobileContainerManager 和 containermanagerd。\n"
+         "触发条件：class 13、组 systemgroup.com.apple.mobilegestaltcache、part 3 和 flags 0x8100000000。\n"
+         "目标根目录：/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches\n"
+         "目标文件：/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist\n"
+         "存档的 24A5380h 证据：普通沙盒调用者获得了 275 字节的读写扩展，写入指定的 CodexMCMWriteProof 标记，验证字节后恢复了原始 inode 和 SHA-256。\n"
+         "当前 24A5390f 边界：简单的系统组路径和 class-13 查询均被拒绝。这些简单查询没有重复存档中的 part-3 读写请求。\n"
+         "关联：此授权缺口与 MobileHouseArrest 身份信任绕过相互独立。\n\n"
 
-         "Rejected route — raw ProxyForClient spoof\n"
-         "Current 24A5390f proof: raw containermanagerd command 39 rejected MobileHouseArrest, mobile_installation_proxy, filecoordinationd, accountsd, and Safari.History identities. No reply contained a container path or sandbox token.\n\n"
+         "已拒绝路径 —— 原始 ProxyForClient 欺骗\n"
+         "当前 24A5390f 证据：原始 containermanagerd command 39 拒绝了 MobileHouseArrest、mobile_installation_proxy、filecoordinationd、accountsd 和 Safari.History 身份。没有任何回复包含容器路径或沙盒令牌。\n\n"
 
-         "MobileGestalt route summary\n"
-         "Direct route: class-13 well-known-group authorization gap -> MobileGestalt Caches.\n"
-         "Pivot route: class-12 geod allow path -> part-3 domain traversal -> MobileGestalt Caches.\n"
-         "Both routes reach the same fixed target. Neither route proves arbitrary /var access.\n"
-         "No result here claims root, kernel, Keychain, TCC, or app-bundle access.\n\n"
+         "MobileGestalt 路径摘要\n"
+         "直接路径：class-13 已知组授权缺口 -> MobileGestalt Caches。\n"
+         "转接路径：class-12 geod 允许路径 -> part-3 域遍历 -> MobileGestalt Caches。\n"
+         "两条路径都到达同一个固定目标。两者都不能证明可以访问任意 /var。\n"
+         "本文件没有声称拥有 root、内核、Keychain、TCC 或应用包访问权限。\n\n"
 
-         "Current Filza access\n"
-         "The sections below are generated during the current launch.\n"
-         "Only direct symlinks created after token activation and a directory-open check appear as enabled roots.\n"
-         "Experimental sections also show each checked subpath and its current open status.\n\n"];
+         "当前 Filza 访问情况\n"
+         "下面的章节会在本次启动期间生成。\n"
+         "只有在令牌激活并通过目录打开检查后创建的直接符号链接，才会显示为已启用根目录。\n"
+         "实验性章节还会显示每个已检查的子路径及其当前打开状态。\n\n"];
 }
 
 static NSString *MCMSpringBoardPreferencesWriteCheck(void)
@@ -1393,37 +1397,37 @@ static NSString *MCMSpringBoardPreferencesWriteCheck(void)
     NSString *verdict = nil;
     const char *notification = NULL;
     if (writeDescriptor >= 0) {
-        verdict = @"WRITABLE-DESCRIPTOR";
+        verdict = @"可写描述符";
         notification =
             "local.research.mcm.springboardprefs.writable";
     } else if (writeErrno == EPERM || writeErrno == EACCES) {
-        verdict = @"DENIED";
+        verdict = @"拒绝";
         notification =
             "local.research.mcm.springboardprefs.denied";
     } else if (writeErrno == ENOENT) {
-        verdict = @"MISSING";
+        verdict = @"缺失";
         notification =
             "local.research.mcm.springboardprefs.missing";
     } else {
-        verdict = @"ERROR";
+        verdict = @"错误";
         notification =
             "local.research.mcm.springboardprefs.error";
     }
     int notifyResult = notify_post(notification);
 
     return [NSString stringWithFormat:
-        @"SpringBoard preferences exact write-authority check\n"
-         "Target: %s\n"
-         "Method: open with O_RDWR | O_CLOEXEC | O_NOFOLLOW after all current MCM routes were activated.\n"
-         "Result: %@; open errno=%d (%s).\n"
-         "Read-only open: %@; errno=%d (%s).\n"
-         "Target metadata: lstat=%@; errno=%d (%s); mode=%04o; uid=%u; gid=%u.\n"
-         "No bytes were written. The probe did not rename, replace, truncate, or unlink the target.\n"
-         "Host notification: %s; notify_post=%d.\n\n",
+        @"SpringBoard 偏好设置精确写入权限检查\n"
+         "目标：%s\n"
+         "方法：在所有当前 MCM 路径激活后，使用 O_RDWR | O_CLOEXEC | O_NOFOLLOW 打开。\n"
+         "结果：%@；打开错误码=%d（%s）。\n"
+         "只读打开：%@；错误码=%d（%s）。\n"
+         "目标元数据：lstat=%@；错误码=%d（%s）；模式=%04o；uid=%u；gid=%u。\n"
+         "未写入任何字节。探测没有重命名、替换、截断或取消链接目标。\n"
+         "主机通知：%s；notify_post=%d。\n\n",
         target, verdict, writeErrno, strerror(writeErrno),
-        readDescriptor >= 0 ? @"allowed" : @"denied",
+         readDescriptor >= 0 ? @"允许" : @"拒绝",
         readErrno, strerror(readErrno),
-        statResult == 0 ? @"present" : @"unavailable",
+         statResult == 0 ? @"存在" : @"不可用",
         statErrno, strerror(statErrno),
         statResult == 0 ? targetStatus.st_mode & 07777 : 0,
         statResult == 0 ? targetStatus.st_uid : 0,
@@ -1435,32 +1439,32 @@ static void MCMWriteAccessMap(NSFileManager *manager, NSString *root)
 {
     NSArray<NSDictionary<NSString *, NSString *> *> *categories = @[
         @{@"Name": kMCMAppDataDirectoryName,
-          @"Primitive": @"MHA-MCM class 2 application-data lookup and sandbox extension"},
+          @"Primitive": @"MHA-MCM class 2 应用数据查找和沙盒扩展"},
         @{@"Name": kMCMAppGroupsDirectoryName,
-          @"Primitive": @"MHA-MCM class 7 app-group lookup and sandbox extension"},
+          @"Primitive": @"MHA-MCM class 7 应用组查找和沙盒扩展"},
         @{@"Name": kMCMExtensionDataDirectoryName,
-          @"Primitive": @"MHA-MCM class 4 extension-data lookup and sandbox extension"},
+          @"Primitive": @"MHA-MCM class 4 扩展数据查找和沙盒扩展"},
         @{@"Name": kMCMVPNDataDirectoryName,
-          @"Primitive": @"MHA-MCM class 6 VPN-data lookup and sandbox extension"},
+          @"Primitive": @"MHA-MCM class 6 VPN 数据查找和沙盒扩展"},
         @{@"Name": kMCMServiceDataDirectoryName,
-          @"Primitive": @"MHA-MCM class 10 service-data lookup and sandbox extension"},
+          @"Primitive": @"MHA-MCM class 10 服务数据查找和沙盒扩展"},
         @{@"Name": kMCMSystemDataDirectoryName,
-          @"Primitive": @"MHA-MCM class 12 system-data lookup and sandbox extension"},
+          @"Primitive": @"MHA-MCM class 12 系统数据查找和沙盒扩展"},
         @{@"Name": kMCMSystemGroupsDirectoryName,
-          @"Primitive": @"MHA-MCM class 13 system-group lookup and sandbox extension"},
+          @"Primitive": @"MHA-MCM class 13 系统组查找和沙盒扩展"},
         @{@"Name": kMCMProtectedDataDirectoryName,
-          @"Primitive": @"MHA-MCM class 15 protected-data lookup and sandbox extension"},
+          @"Primitive": @"MHA-MCM class 15 受保护数据查找和沙盒扩展"},
         @{@"Name": kMCMAdditionalLocationsDirectoryName,
-          @"Primitive": @"MHA-MCM class 13 scoped part-domain lookup and sandbox extension"},
+          @"Primitive": @"MHA-MCM class 13 作用域 part-domain 查找和沙盒扩展"},
         @{@"Name": kMCMExperimentalDirectoryName,
-          @"Primitive": @"MHA-MCM scoped class 10, 12, 13, and 15 probes"},
+          @"Primitive": @"MHA-MCM 作用域 class 10、12、13 和 15 探测"},
     ];
 
     NSMutableString *map = [NSMutableString stringWithFormat:
-        @"MobileContainerManager and MobileGestalt complete map\n\n"
-         "MHA-MCM means the MobileHouseArrest identity-trust bypass in MobileContainerManager.\n"
-         "Build-specific proof is labeled below. The current device is %@.\n"
-         "The map records roots and preselected probe subpaths. It does not enumerate files inside target containers.\n\n",
+        @"MobileContainerManager 和 MobileGestalt 完整映射\n\n"
+         "MHA-MCM 表示 MobileContainerManager 中的 MobileHouseArrest 身份信任绕过。\n"
+         "下面会标记与构建相关的证据。当前设备为 %@。\n"
+         "此映射记录根目录和预选探测子路径，不会枚举目标容器内的文件。\n\n",
          NSProcessInfo.processInfo.operatingSystemVersionString];
     MCMAppendUnifiedFindingMap(map);
     [map appendString:MCMSpringBoardPreferencesWriteCheck()];
@@ -1476,9 +1480,9 @@ static void MCMWriteAccessMap(NSFileManager *manager, NSString *root)
             ? MCMSymlinkAccessEntries(manager, directory) : @[];
 
         NSMutableString *section = [NSMutableString stringWithFormat:
-            @"%@\nPrimitive: %@\n", name, primitive];
+            @"%@\n原理：%@\n", name, primitive];
         if (!present)
-            [section appendString:@"Status: folder absent; no root was enabled.\n"];
+            [section appendString:@"状态：文件夹不存在；未启用根目录。\n"];
         else
             MCMAppendSymlinkAccess(section, entries);
         if ([name isEqualToString:kMCMExperimentalDirectoryName])
@@ -1492,18 +1496,18 @@ static void MCMWriteAccessMap(NSFileManager *manager, NSString *root)
         stringByAppendingPathComponent:kMCMWallpaperLabDirectoryName];
     NSString *wallpaperSection = [NSString stringWithFormat:
         @"%@\n"
-         "Primitive: MHA-MCM class 2 application-data lookup for com.apple.PosterBoard.\n"
-         "Status: this folder is local staging. PosterBoard access starts only during a Wallpaper Lab action.\n"
-         "Potential target root: the class-2 com.apple.PosterBoard data container returned during that action.\n\n",
+         "原理：通过 MHA-MCM class 2 查找 com.apple.PosterBoard 应用数据。\n"
+         "状态：此文件夹用于本地暂存。只有执行壁纸实验室操作时才会访问 PosterBoard。\n"
+         "潜在目标根目录：该操作返回的 class-2 com.apple.PosterBoard 数据容器。\n\n",
         kMCMWallpaperLabDirectoryName];
     [map appendString:wallpaperSection];
     MCMWriteAccessReadme(manager, wallpaperDirectory, wallpaperSection);
 
     [map appendString:
         @"Files Traversal\n"
-         "Primitive: Apple Files relative-symlink portal experiment.\n"
-         "Status: disabled. This build removes the folder and enables no Files Traversal path.\n\n"
-         "Boundary: no arbitrary /var, Keychain, TCC, root, kernel, or app-bundle access is claimed.\n"];
+         "原理：Apple Files 相对符号链接入口实验。\n"
+         "状态：已禁用。此构建会移除该文件夹，不启用任何 Files Traversal 路径。\n\n"
+         "边界：不声称拥有任意 /var、Keychain、TCC、root、内核或应用包访问权限。\n"];
 
     NSString *mapPath = [root stringByAppendingPathComponent:@"ACCESS MAP.txt"];
     MCMWriteGeneratedString(map, mapPath);

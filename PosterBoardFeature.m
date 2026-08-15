@@ -1125,16 +1125,16 @@ void PBWallpaperFeatureStart(void)
     }
     PBInstallBundledSamples();
     NSString *readme = [PBWorkspace() stringByAppendingPathComponent:@"README.txt"];
-    NSString *text = @"Wallpaper Lab\n\n"
-        @"Primitive: MHA-MCM class 2 application-data lookup for com.apple.PosterBoard.\n"
-        @"This folder is local staging. PosterBoard access starts only during a Wallpaper Lab action.\n\n"
-        @"The bundled GPL-licensed Cipher wallpaper imports automatically on first launch.\n"
-        @"When CIPHER READY appears here, open Settings > Wallpaper.\n\n"
-        @"Other descriptor-style .tendies packages may be extracted into Imports.\n"
-        @"Only descriptor-style packages are supported. Container-style packages are rejected.\n"
-        @"Imports add new UUID directories and never overwrite the PosterBoard database or an existing descriptor.\n"
-        @"Nugget's refresh keys are merged into the preference file after an exact backup is saved.\n"
-        @"Rollback verifies SHA-256 hashes before restoring the preference and removing the descriptor.\n";
+    NSString *text = @"壁纸实验室\n\n"
+        @"原理：通过 MHA-MCM class 2 查找 com.apple.PosterBoard 应用数据。\n"
+        @"此文件夹用于本地暂存。只有执行壁纸实验室操作时才会访问 PosterBoard。\n\n"
+        @"内置的 GPL 许可 Cipher 壁纸会在首次启动时自动导入。\n"
+        @"此处出现 CIPHER READY 后，请打开“设置 > 壁纸”。\n\n"
+        @"其他描述符类型的 .tendies 包可以解压到 Imports 文件夹。\n"
+        @"只支持描述符类型的包，容器类型的包会被拒绝。\n"
+        @"导入只会添加新的 UUID 目录，不会覆盖 PosterBoard 数据库或已有描述符。\n"
+        @"Nugget 刷新键会在完成精确备份后合并到偏好设置文件。\n"
+        @"回滚前会验证 SHA-256 哈希，然后恢复偏好设置并移除描述符。\n";
     [text writeToFile:readme atomically:YES encoding:NSUTF8StringEncoding error:nil];
     PBStartAutomaticCipherImport();
 }
