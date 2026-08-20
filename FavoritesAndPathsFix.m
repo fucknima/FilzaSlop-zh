@@ -1,5 +1,6 @@
 @import UIKit;
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import "MCMFilzaIntegration.h"
 
 #pragma mark - Helpers
