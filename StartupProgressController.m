@@ -99,6 +99,10 @@ static void FSStartupReloadBrowser(void)
     title.text = @"FilzaSlop";
     title.font = [UIFont systemFontOfSize:28 weight:UIFontWeightSemibold];
     title.textAlignment = NSTextAlignmentCenter;
+    title.numberOfLines = 1;
+    title.adjustsFontSizeToFitWidth = YES;
+    title.minimumScaleFactor = 0.85;
+    title.lineBreakMode = NSLineBreakByClipping;
 
     UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
         initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
@@ -116,7 +120,8 @@ static void FSStartupReloadBrowser(void)
     status.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
     status.textColor = UIColor.secondaryLabelColor;
     status.textAlignment = NSTextAlignmentCenter;
-    status.numberOfLines = 2;
+    status.numberOfLines = 0;
+    status.lineBreakMode = NSLineBreakByCharWrapping;
 
     UILabel *percent = [UILabel new];
     percent.translatesAutoresizingMaskIntoConstraints = NO;
@@ -137,6 +142,15 @@ static void FSStartupReloadBrowser(void)
 
     [overlay addSubview:stack];
     [window addSubview:overlay];
+
+    // The previous layout only specified a maximum width. UIStackView could
+    // therefore collapse to the narrow intrinsic width of the progress view,
+    // which compressed both title and status labels into ellipses. Prefer the
+    // available phone width while retaining a sensible cap on wider devices.
+    NSLayoutConstraint *adaptiveWidth =
+        [stack.widthAnchor constraintEqualToAnchor:overlay.widthAnchor constant:-64.0];
+    adaptiveWidth.priority = UILayoutPriorityDefaultHigh;
+
     [NSLayoutConstraint activateConstraints:@[
         [overlay.leadingAnchor constraintEqualToAnchor:window.leadingAnchor],
         [overlay.trailingAnchor constraintEqualToAnchor:window.trailingAnchor],
@@ -144,9 +158,11 @@ static void FSStartupReloadBrowser(void)
         [overlay.bottomAnchor constraintEqualToAnchor:window.bottomAnchor],
         [stack.centerYAnchor constraintEqualToAnchor:overlay.centerYAnchor constant:-24.0],
         [stack.centerXAnchor constraintEqualToAnchor:overlay.centerXAnchor],
-        [stack.widthAnchor constraintLessThanOrEqualToConstant:300.0],
-        [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:overlay.leadingAnchor constant:36.0],
-        [stack.trailingAnchor constraintLessThanOrEqualToAnchor:overlay.trailingAnchor constant:-36.0],
+        adaptiveWidth,
+        [stack.widthAnchor constraintLessThanOrEqualToConstant:340.0],
+        [stack.widthAnchor constraintGreaterThanOrEqualToConstant:240.0],
+        [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:overlay.leadingAnchor constant:24.0],
+        [stack.trailingAnchor constraintLessThanOrEqualToAnchor:overlay.trailingAnchor constant:-24.0],
         [progressView.heightAnchor constraintEqualToConstant:4.0],
     ]];
 
