@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    branches: [main, fix/rename-first-responder-timing]
   pull_request:
   workflow_dispatch:
     inputs:
