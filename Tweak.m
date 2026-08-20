@@ -1328,52 +1328,87 @@ static void TF_adjustInput(UIView *input, CGFloat kbHeight, NSTimeInterval durat
         UIView *main = nil;
         @try { main = [input valueForKey:@"mainInputView"]; } @catch (__unused NSException *e) {}
         if (![main isKindOfClass:UIView.class] || !main.superview) return;
-        // Use transform – works for both frame and Auto Layout, and avoids constraint search crashes
+        UIView *container = main.superview;
+        // Ensure layout is up to date so frame is valid
+        [container layoutIfNeeded];
+        static const void *kOrigYKey = (void *)"TFOrigY";
+        NSNumber *stored = objc_getAssociatedObject(main, kOrigYKey);
+        CGFloat origY;
+        if (stored) {
+            origY = stored.doubleValue;
+        } else {
+            // First time: save original Y when transform is identity
+            if (CGAffineTransformIsIdentity(main.transform)) {
+                origY = main.frame.origin.y;
+            } else {
+                // Already transformed, recover orig as current Y - translation
+                origY = main.frame.origin.y - main.transform.ty;
+            }
+            objc_setAssociatedObject(main, kOrigYKey, @(origY), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            NSLog(@"[KeyboardFix] saved origY=%.1f for %p", origY, main);
+        }
+        CGFloat containerH = container.bounds.size.height;
+        if (containerH < 10) containerH = input.bounds.size.height;
+        if (containerH < 10) containerH = input.window.bounds.size.height;
+        CGFloat inputH = main.bounds.size.height;
+        if (inputH < 10) inputH = 56;
+        CGFloat targetY;
+        if (kbHeight > 0) {
+            // Place just above keyboard
+            targetY = containerH - inputH - kbHeight;
+            // Clamp so it doesn't go under island: keep at least 60pt from top
+            if (targetY < 60) targetY = 60;
+        } else {
+            targetY = origY;
+        }
+        CGFloat delta = targetY - origY;
         UIViewAnimationOptions opts = (UIViewAnimationOptions)((curve << 16) | UIViewAnimationOptionBeginFromCurrentState);
         [UIView animateWithDuration:duration delay:0 options:opts animations:^{
-            if (kbHeight > 0) {
-                main.transform = CGAffineTransformMakeTranslation(0, -kbHeight);
-            } else {
-                main.transform = CGAffineTransformIdentity;
-            }
+            main.transform = CGAffineTransformMakeTranslation(0, delta);
         } completion:nil];
-        NSLog(@"[KeyboardFix] adjust height=%.1f duration=%.3f curve=%ld", kbHeight, duration, (long)curve);
+        NSLog(@"[KeyboardFix] adjust kb=%.1f origY=%.1f targetY=%.1f delta=%.1f containerH=%.1f", kbHeight, origY, targetY, delta, containerH);
     } @catch (__unused NSException *e) {
         NSLog(@"[KeyboardFix] adjust exception %@", e);
     }
 }
 static void TF_handleKeyboard(NSNotification *note) {
-    NSDictionary *info = note.userInfo;
-    CGRect endFrame = [info[UIKeyboardFrameEndUserInfoKey] CGRectValue];
-    NSTimeInterval duration = [info[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
-    NSInteger curve = [info[UIKeyboardAnimationCurveUserInfoKey] integerValue];
-    NSString *name = note.name;
-    CGFloat height = 0;
-    if ([name isEqualToString:UIKeyboardWillHideNotification]) {
-        height = 0;
-    } else {
-        UIWindow *window = UIApplication.sharedApplication.keyWindow ?: UIApplication.sharedApplication.windows.firstObject;
-        if (window) {
-            CGRect winBounds = window.bounds;
-            CGRect kbInWindow = [window convertRect:endFrame fromWindow:nil];
-            height = CGRectGetHeight(winBounds) - CGRectGetMinY(kbInWindow);
-            if (height < 0) height = 0;
-            // Hide notification often reports height 0, but WillChange may report small
-            if ([name isEqualToString:UIKeyboardWillShowNotification] && height < 50) {
-                // fallback to endFrame height
-                height = CGRectGetHeight(endFrame);
-            }
+    @try {
+        NSDictionary *info = note.userInfo;
+        CGRect endFrame = [info[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+        NSTimeInterval duration = [info[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
+        NSInteger curve = [info[UIKeyboardAnimationCurveUserInfoKey] integerValue];
+        NSString *name = note.name;
+        CGFloat height = 0;
+        if ([name isEqualToString:UIKeyboardWillHideNotification]) {
+            height = 0;
         } else {
+            // Use endFrame height directly – reliable for both show and change, avoids window conversion glitches
             height = CGRectGetHeight(endFrame);
+            // If keyboard is floating/detached, endFrame may be not at bottom, but height is still correct for translation?
+            // For safety, if height < 40 and not hide, treat as 0 (e.g. hardware keyboard)
+            if (height < 40) height = 0;
+            // On iPhone the keyboard always docks, so height is full keyboard height including candidate bar
         }
-    }
-    gTFKeyboardHeight = height;
-    gTFKeyboardDuration = duration ?: 0.25;
-    gTFKeyboardCurve = curve;
-    UIView *active = TF_activeInput();
-    if (active) TF_adjustInput(active, height, gTFKeyboardDuration, gTFKeyboardCurve);
-    else if (height == 0) {
-        // no active input, nothing to do
+        gTFKeyboardHeight = height;
+        gTFKeyboardDuration = duration ?: 0.25;
+        gTFKeyboardCurve = curve;
+        UIView *active = TF_activeInput();
+        if (active) {
+            TF_adjustInput(active, height, gTFKeyboardDuration, gTFKeyboardCurve);
+        } else if (height > 0) {
+            // View not yet in window (race between showInViewController and keyboard), retry shortly
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                UIView *retry = TF_activeInput();
+                if (retry) TF_adjustInput(retry, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+            });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                UIView *retry2 = TF_activeInput();
+                if (retry2) TF_adjustInput(retry2, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+            });
+        }
+        NSLog(@"[KeyboardFix] note=%@ height=%.1f dur=%.3f curve=%ld", name, height, duration, (long)curve);
+    } @catch (__unused NSException *e) {
+        NSLog(@"[KeyboardFix] handle exception %@", e);
     }
 }
 static IMP orig_TGFocused_showInVC = NULL;
