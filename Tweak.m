@@ -1280,6 +1280,206 @@ static void runOptInPasteCopyProbe(void) {
         copied, verified, destinationRemoved && sourceRemoved, error);
 }
 
+#pragma mark - TGFocusedInput keyboard avoidance (Rename/NewFolder)
+
+static CGFloat gTFKeyboardHeight = 0;
+static NSTimeInterval gTFKeyboardDuration = 0.25;
+static NSInteger gTFKeyboardCurve = 7;
+
+static UIView *TF_findInView(UIView *view, Class cls) {
+    if (!view) return nil;
+    if ([view isKindOfClass:cls]) return view;
+    for (UIView *sub in view.subviews) {
+        UIView *found = TF_findInView(sub, cls);
+        if (found) return found;
+    }
+    return nil;
+}
+static UIView *TF_activeInput(void) {
+    Class cls = NSClassFromString(@"TGFocusedInput");
+    if (!cls) return nil;
+    NSArray<UIWindow *> *wins = UIApplication.sharedApplication.windows;
+    for (NSInteger i = (NSInteger)wins.count - 1; i >= 0; i--) {
+        UIWindow *win = wins[(NSUInteger)i];
+        if (win.hidden || win.alpha == 0) continue;
+        UIView *found = TF_findInView(win, cls);
+        if (found && !found.hidden && found.alpha > 0.01) return found;
+        found = TF_findInView(win.rootViewController.view, cls);
+        if (found && !found.hidden && found.alpha > 0.01) return found;
+    }
+    UIWindow *key = UIApplication.sharedApplication.keyWindow;
+    UIView *found = TF_findInView(key, cls);
+    if (found) return found;
+    return TF_findInView(key.rootViewController.view, cls);
+}
+static void TF_adjustInput(UIView *input, CGFloat kbHeight, NSTimeInterval duration, NSInteger curve) {
+    if (!input || !input.window) return;
+    Ivar ivar = class_getInstanceVariable([input class], "mainInputView");
+    if (!ivar) ivar = class_getInstanceVariable(NSClassFromString(@"TGFocusedInput"), "mainInputView");
+    UIView *main = ivar ? object_getIvar(input, ivar) : nil;
+    if (!main) {
+        @try { main = [input valueForKey:@"mainInputView"]; } @catch (__unused NSException *e) {}
+    }
+    if (!main || !main.superview) return;
+    UIWindow *window = input.window ?: UIApplication.sharedApplication.keyWindow;
+    if (!window) return;
+    CGRect inputBounds = input.bounds;
+    CGFloat containerH = inputBounds.size.height > 0 ? inputBounds.size.height : window.bounds.size.height;
+    CGFloat inputH = main.bounds.size.height;
+    if (inputH < 1) inputH = 56;
+    CGFloat safeBottom = window.safeAreaInsets.bottom;
+    CGFloat targetH = kbHeight > 0 ? kbHeight : safeBottom;
+    CGFloat targetY = containerH - inputH - targetH;
+    if (targetY < 0) targetY = 0;
+    UIView *superview = main.superview;
+    if (superview != input) {
+        CGPoint p = [input convertPoint:CGPointMake(0, targetY) toView:superview];
+        targetY = p.y;
+    }
+    // Try Auto Layout: find bottom constraint pinning main to superview/safeArea
+    BOOL hasConstraint = NO;
+    NSArray *candidateConstraints = superview.constraints;
+    // Also check input.constraints if superview != input (common ancestor holds constraint)
+    if (superview != input && input.constraints.count > 0) {
+        candidateConstraints = [candidateConstraints arrayByAddingObjectsFromArray:input.constraints];
+    }
+    for (NSLayoutConstraint *c in candidateConstraints) {
+        BOOL isBottom = (c.firstItem == main && c.firstAttribute == NSLayoutAttributeBottom) ||
+                        (c.secondItem == main && c.secondAttribute == NSLayoutAttributeBottom);
+        if (!isBottom) continue;
+        hasConstraint = YES;
+        CGFloat newConstant;
+        BOOL isGuide = NO;
+        @try {
+            NSString *clsName = NSStringFromClass([c.secondItem class]);
+            if ([clsName containsString:@"LayoutGuide"] || [clsName containsString:@"Guide"]) isGuide = YES;
+            clsName = NSStringFromClass([c.firstItem class]);
+            if ([clsName containsString:@"LayoutGuide"] || [clsName containsString:@"Guide"]) isGuide = YES;
+        } @catch (__unused NSException *e) {}
+        if (kbHeight > 0) newConstant = -kbHeight;
+        else newConstant = isGuide ? 0 : -safeBottom;
+        UIViewAnimationOptions opts = (UIViewAnimationOptions)((curve << 16) | UIViewAnimationOptionBeginFromCurrentState);
+        [UIView animateWithDuration:duration delay:0 options:opts animations:^{
+            c.constant = newConstant;
+            [superview layoutIfNeeded];
+            [input layoutIfNeeded];
+        } completion:nil];
+        break;
+    }
+    if (hasConstraint) {
+        NSLog(@"[KeyboardFix] adjust via constraint height=%.1f targetY=%.1f", kbHeight, targetY);
+        return;
+    }
+    UIViewAnimationOptions opts = (UIViewAnimationOptions)((curve << 16) | UIViewAnimationOptionBeginFromCurrentState);
+    [UIView animateWithDuration:duration delay:0 options:opts animations:^{
+        CGRect f = main.frame;
+        f.origin.y = targetY;
+        main.frame = f;
+    } completion:nil];
+    NSLog(@"[KeyboardFix] adjust via frame height=%.1f duration=%.3f curve=%ld targetY=%.1f", kbHeight, duration, (long)curve, targetY);
+}
+static void TF_handleKeyboard(NSNotification *note) {
+    NSDictionary *info = note.userInfo;
+    CGRect endFrame = [info[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+    NSTimeInterval duration = [info[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
+    NSInteger curve = [info[UIKeyboardAnimationCurveUserInfoKey] integerValue];
+    NSString *name = note.name;
+    CGFloat height = 0;
+    if ([name isEqualToString:UIKeyboardWillHideNotification]) {
+        height = 0;
+    } else {
+        UIWindow *window = UIApplication.sharedApplication.keyWindow ?: UIApplication.sharedApplication.windows.firstObject;
+        if (window) {
+            CGRect winBounds = window.bounds;
+            CGRect kbInWindow = [window convertRect:endFrame fromWindow:nil];
+            height = CGRectGetHeight(winBounds) - CGRectGetMinY(kbInWindow);
+            if (height < 0) height = 0;
+            // Hide notification often reports height 0, but WillChange may report small
+            if ([name isEqualToString:UIKeyboardWillShowNotification] && height < 50) {
+                // fallback to endFrame height
+                height = CGRectGetHeight(endFrame);
+            }
+        } else {
+            height = CGRectGetHeight(endFrame);
+        }
+    }
+    gTFKeyboardHeight = height;
+    gTFKeyboardDuration = duration ?: 0.25;
+    gTFKeyboardCurve = curve;
+    UIView *active = TF_activeInput();
+    if (active) TF_adjustInput(active, height, gTFKeyboardDuration, gTFKeyboardCurve);
+    else if (height == 0) {
+        // no active input, nothing to do
+    }
+}
+static IMP orig_TGFocused_showInVC = NULL;
+static IMP orig_Rename_showInVC = NULL;
+static IMP orig_NewFolder_showInVC = NULL;
+static IMP orig_TGFocused_didMoveToWindow = NULL;
+
+static void hook_TGFocused_showInVC(id self, SEL _cmd, id vc) {
+    ((void(*)(id,SEL,id))orig_TGFocused_showInVC)(self, _cmd, vc);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        if (gTFKeyboardHeight > 0) TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        if (gTFKeyboardHeight > 0) TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+    });
+}
+static void hook_Rename_showInVC(id self, SEL _cmd, id vc, id delegate, BOOL isDir) {
+    ((void(*)(id,SEL,id,id,BOOL))orig_Rename_showInVC)(self, _cmd, vc, delegate, isDir);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        if (gTFKeyboardHeight > 0) TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        if (gTFKeyboardHeight > 0) TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+    });
+}
+static void hook_NewFolder_showInVC(id self, SEL _cmd, id vc, id delegate) {
+    ((void(*)(id,SEL,id,id))orig_NewFolder_showInVC)(self, _cmd, vc, delegate);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        if (gTFKeyboardHeight > 0) TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+    });
+}
+static void hook_TGFocused_didMoveToWindow(id self, SEL _cmd) {
+    ((void(*)(id,SEL))orig_TGFocused_didMoveToWindow)(self, _cmd);
+    if (gTFKeyboardHeight > 0 && ((UIView *)self).window) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+        });
+    }
+}
+
+static void installKeyboardFix(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+        [nc addObserverForName:UIKeyboardWillShowNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){ TF_handleKeyboard(n); }];
+        [nc addObserverForName:UIKeyboardWillHideNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){ TF_handleKeyboard(n); }];
+        [nc addObserverForName:UIKeyboardWillChangeFrameNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){ TF_handleKeyboard(n); }];
+        Class tgf = NSClassFromString(@"TGFocusedInput");
+        if (tgf) {
+            Method m = class_getInstanceMethod(tgf, NSSelectorFromString(@"showInViewController:"));
+            if (m) { orig_TGFocused_showInVC = method_getImplementation(m); method_setImplementation(m, (IMP)hook_TGFocused_showInVC); }
+        }
+        Class rename = NSClassFromString(@"RenameView");
+        if (rename) {
+            Method m = class_getInstanceMethod(rename, NSSelectorFromString(@"showInViewController:delegate:isDirectory:"));
+            if (m) { orig_Rename_showInVC = method_getImplementation(m); method_setImplementation(m, (IMP)hook_Rename_showInVC); }
+        }
+        Class newFolder = NSClassFromString(@"NewFolder");
+        if (newFolder) {
+            Method m = class_getInstanceMethod(newFolder, NSSelectorFromString(@"showInViewController:delegate:"));
+            if (m) { orig_NewFolder_showInVC = method_getImplementation(m); method_setImplementation(m, (IMP)hook_NewFolder_showInVC); }
+        }
+        if (tgf) {
+            Method m2 = class_getInstanceMethod(tgf, NSSelectorFromString(@"didMoveToWindow"));
+            if (m2) { orig_TGFocused_didMoveToWindow = method_getImplementation(m2); method_setImplementation(m2, (IMP)hook_TGFocused_didMoveToWindow); }
+        }
+        NSLog(@"[KeyboardFix] observers installed");
+    });
+}
+
 #pragma mark - Hook Installation
 
 static void installHooks(void) {
@@ -1475,6 +1675,8 @@ static void installHooks(void) {
         Method m = class_getInstanceMethod(appsVC, NSSelectorFromString(@"browserView:didSelectItemAtIndexPath:"));
         if (m) { orig_didSelectItem = method_getImplementation(m); method_setImplementation(m, (IMP)hook_didSelectItem); }
     }
+
+    installKeyboardFix();
 
     NSLog(@"[Tweak] All hooks installed");
 }
