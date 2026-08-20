@@ -214,7 +214,7 @@ static void FSMsgSendVoid2(id target, SEL selector, id arg1, id arg2) {
             self.textField.selectedTextRange = [self.textField textRangeFromPosition:start toPosition:end];
     });
 
-    NSLog(@"[RenameKeyboardFix] presented modern overlay root=%@ keyboardGuide=%@ name=%@",
+    NSLog(@"[RenameKeyboardFix-v2] presented modern overlay root=%@ keyboardGuide=%@ name=%@",
           NSStringFromClass(root.class), keyboardGuide, self.originalName);
 }
 
@@ -300,13 +300,13 @@ static void InstallModernRenameFix(void) {
     SEL selector = NSSelectorFromString(@"showInViewController:delegate:isDirectory:");
     Method method = rename ? class_getInstanceMethod(rename, selector) : NULL;
     if (!method) {
-        NSLog(@"[RenameKeyboardFix] RenameView selector not found");
+        NSLog(@"[RenameKeyboardFix-v2] RenameView selector not found");
         return;
     }
 
     gOrigRenameShow = method_getImplementation(method);
     method_setImplementation(method, (IMP)hook_Rename_showModern);
-    NSLog(@"[RenameKeyboardFix] installed modern RenameView presentation");
+    NSLog(@"[RenameKeyboardFix-v2] installed modern RenameView presentation");
 }
 
 __attribute__((constructor))
