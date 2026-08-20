@@ -2,7 +2,13 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+FOUNDATION_EXPORT NSNotificationName const MCMFilzaStartupProgressNotification;
+FOUNDATION_EXPORT NSNotificationName const MCMFilzaStartupCompleteNotification;
+FOUNDATION_EXPORT NSString *const MCMFilzaStartupProgressKey;
+FOUNDATION_EXPORT NSString *const MCMFilzaStartupStatusKey;
+
 FOUNDATION_EXPORT void MCMFilzaStart(void);
+FOUNDATION_EXPORT BOOL MCMFilzaStartupIsComplete(void);
 FOUNDATION_EXPORT NSString *_Nullable MCMFilzaDataContainerPath(
     NSString *identifier, NSString * _Nullable * _Nullable error);
 FOUNDATION_EXPORT NSString *MCMFilzaVirtualRoot(void);
