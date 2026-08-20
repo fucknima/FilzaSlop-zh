@@ -1296,87 +1296,51 @@ static UIView *TF_findInView(UIView *view, Class cls) {
     return nil;
 }
 static UIView *TF_activeInput(void) {
-    Class cls = NSClassFromString(@"TGFocusedInput");
-    if (!cls) return nil;
-    NSArray<UIWindow *> *wins = UIApplication.sharedApplication.windows;
-    for (NSInteger i = (NSInteger)wins.count - 1; i >= 0; i--) {
-        UIWindow *win = wins[(NSUInteger)i];
-        if (win.hidden || win.alpha == 0) continue;
-        UIView *found = TF_findInView(win, cls);
-        if (found && !found.hidden && found.alpha > 0.01) return found;
-        found = TF_findInView(win.rootViewController.view, cls);
-        if (found && !found.hidden && found.alpha > 0.01) return found;
-    }
-    UIWindow *key = UIApplication.sharedApplication.keyWindow;
-    UIView *found = TF_findInView(key, cls);
-    if (found) return found;
-    return TF_findInView(key.rootViewController.view, cls);
+    @try {
+        Class cls = NSClassFromString(@"TGFocusedInput");
+        if (!cls) return nil;
+        NSArray<UIWindow *> *wins = UIApplication.sharedApplication.windows;
+        for (NSInteger i = (NSInteger)wins.count - 1; i >= 0; i--) {
+            UIWindow *win = wins[(NSUInteger)i];
+            if (!win || win.hidden || win.alpha == 0) continue;
+            UIView *found = TF_findInView(win, cls);
+            if (found && !found.hidden && found.alpha > 0.01 && found.window) return found;
+            @try {
+                UIView *vcView = win.rootViewController.view;
+                found = TF_findInView(vcView, cls);
+                if (found && !found.hidden && found.alpha > 0.01 && found.window) return found;
+            } @catch (__unused NSException *e) {}
+        }
+        UIWindow *key = UIApplication.sharedApplication.keyWindow;
+        if (!key) return nil;
+        UIView *found = TF_findInView(key, cls);
+        if (found && found.window) return found;
+        @try {
+            return TF_findInView(key.rootViewController.view, cls);
+        } @catch (__unused NSException *e) { return nil; }
+    } @catch (__unused NSException *e) { return nil; }
 }
 static void TF_adjustInput(UIView *input, CGFloat kbHeight, NSTimeInterval duration, NSInteger curve) {
-    if (!input || !input.window) return;
-    Ivar ivar = class_getInstanceVariable([input class], "mainInputView");
-    if (!ivar) ivar = class_getInstanceVariable(NSClassFromString(@"TGFocusedInput"), "mainInputView");
-    UIView *main = ivar ? object_getIvar(input, ivar) : nil;
-    if (!main) {
+    @try {
+        if (!input || !input.window) return;
+        Class tgfCls = NSClassFromString(@"TGFocusedInput");
+        if (!tgfCls || ![input isKindOfClass:tgfCls]) return;
+        UIView *main = nil;
         @try { main = [input valueForKey:@"mainInputView"]; } @catch (__unused NSException *e) {}
-    }
-    if (!main || !main.superview) return;
-    UIWindow *window = input.window ?: UIApplication.sharedApplication.keyWindow;
-    if (!window) return;
-    CGRect inputBounds = input.bounds;
-    CGFloat containerH = inputBounds.size.height > 0 ? inputBounds.size.height : window.bounds.size.height;
-    CGFloat inputH = main.bounds.size.height;
-    if (inputH < 1) inputH = 56;
-    CGFloat safeBottom = window.safeAreaInsets.bottom;
-    CGFloat targetH = kbHeight > 0 ? kbHeight : safeBottom;
-    CGFloat targetY = containerH - inputH - targetH;
-    if (targetY < 0) targetY = 0;
-    UIView *superview = main.superview;
-    if (superview != input) {
-        CGPoint p = [input convertPoint:CGPointMake(0, targetY) toView:superview];
-        targetY = p.y;
-    }
-    // Try Auto Layout: find bottom constraint pinning main to superview/safeArea
-    BOOL hasConstraint = NO;
-    NSArray *candidateConstraints = superview.constraints;
-    // Also check input.constraints if superview != input (common ancestor holds constraint)
-    if (superview != input && input.constraints.count > 0) {
-        candidateConstraints = [candidateConstraints arrayByAddingObjectsFromArray:input.constraints];
-    }
-    for (NSLayoutConstraint *c in candidateConstraints) {
-        BOOL isBottom = (c.firstItem == main && c.firstAttribute == NSLayoutAttributeBottom) ||
-                        (c.secondItem == main && c.secondAttribute == NSLayoutAttributeBottom);
-        if (!isBottom) continue;
-        hasConstraint = YES;
-        CGFloat newConstant;
-        BOOL isGuide = NO;
-        @try {
-            NSString *clsName = NSStringFromClass([c.secondItem class]);
-            if ([clsName containsString:@"LayoutGuide"] || [clsName containsString:@"Guide"]) isGuide = YES;
-            clsName = NSStringFromClass([c.firstItem class]);
-            if ([clsName containsString:@"LayoutGuide"] || [clsName containsString:@"Guide"]) isGuide = YES;
-        } @catch (__unused NSException *e) {}
-        if (kbHeight > 0) newConstant = -kbHeight;
-        else newConstant = isGuide ? 0 : -safeBottom;
+        if (![main isKindOfClass:UIView.class] || !main.superview) return;
+        // Use transform – works for both frame and Auto Layout, and avoids constraint search crashes
         UIViewAnimationOptions opts = (UIViewAnimationOptions)((curve << 16) | UIViewAnimationOptionBeginFromCurrentState);
         [UIView animateWithDuration:duration delay:0 options:opts animations:^{
-            c.constant = newConstant;
-            [superview layoutIfNeeded];
-            [input layoutIfNeeded];
+            if (kbHeight > 0) {
+                main.transform = CGAffineTransformMakeTranslation(0, -kbHeight);
+            } else {
+                main.transform = CGAffineTransformIdentity;
+            }
         } completion:nil];
-        break;
+        NSLog(@"[KeyboardFix] adjust height=%.1f duration=%.3f curve=%ld", kbHeight, duration, (long)curve);
+    } @catch (__unused NSException *e) {
+        NSLog(@"[KeyboardFix] adjust exception %@", e);
     }
-    if (hasConstraint) {
-        NSLog(@"[KeyboardFix] adjust via constraint height=%.1f targetY=%.1f", kbHeight, targetY);
-        return;
-    }
-    UIViewAnimationOptions opts = (UIViewAnimationOptions)((curve << 16) | UIViewAnimationOptionBeginFromCurrentState);
-    [UIView animateWithDuration:duration delay:0 options:opts animations:^{
-        CGRect f = main.frame;
-        f.origin.y = targetY;
-        main.frame = f;
-    } completion:nil];
-    NSLog(@"[KeyboardFix] adjust via frame height=%.1f duration=%.3f curve=%ld targetY=%.1f", kbHeight, duration, (long)curve, targetY);
 }
 static void TF_handleKeyboard(NSNotification *note) {
     NSDictionary *info = note.userInfo;
