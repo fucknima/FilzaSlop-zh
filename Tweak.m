@@ -1304,14 +1304,18 @@ static UIView *TF_activeInput(void) {
             UIWindow *win = wins[(NSUInteger)i];
             if (!win || win.hidden || win.alpha == 0) continue;
             UIView *found = TF_findInView(win, cls);
-            if (found && !found.hidden && found.alpha > 0.01 && found.window) return found;
+            if (found && found.window) return found;
             @try {
                 UIView *vcView = win.rootViewController.view;
                 found = TF_findInView(vcView, cls);
-                if (found && !found.hidden && found.alpha > 0.01 && found.window) return found;
+                if (found && found.window) return found;
             } @catch (__unused NSException *e) {}
         }
         UIWindow *key = UIApplication.sharedApplication.keyWindow;
+        if (!key) {
+            // iOS 13+ scene: fallback to first window
+            key = wins.firstObject;
+        }
         if (!key) return nil;
         UIView *found = TF_findInView(key, cls);
         if (found && found.window) return found;
@@ -1327,12 +1331,15 @@ static void TF_adjustInput(UIView *input, CGFloat kbHeight, NSTimeInterval durat
         if (!tgfCls || ![input isKindOfClass:tgfCls]) return;
         UIView *main = nil;
         UITextField *hidden = nil;
+        UITextField *inputTF = nil;
         @try { main = [input valueForKey:@"mainInputView"]; } @catch (__unused NSException *e) {}
         @try { hidden = [input valueForKey:@"hiddenTextField"]; } @catch (__unused NSException *e) {}
+        @try { inputTF = [input valueForKey:@"inputTextField"]; } @catch (__unused NSException *e) {}
         // Primary: use inputAccessoryView – native, always above keyboard, no manual math
-        if ([hidden isKindOfClass:UITextField.class] && [main isKindOfClass:UIView.class]) {
-            if (hidden.inputAccessoryView != main) {
-                // Ensure correct size before becoming accessory
+        BOOL accessorySet = NO;
+        for (UITextField *tf in @[hidden, inputTF]) {
+            if (![tf isKindOfClass:UITextField.class] || ![main isKindOfClass:UIView.class]) continue;
+            if (tf.inputAccessoryView != main) {
                 if (main.bounds.size.width < 10 || main.bounds.size.height < 10) {
                     CGRect f = main.frame;
                     if (f.size.width < 10) f.size.width = input.window.bounds.size.width;
@@ -1340,23 +1347,15 @@ static void TF_adjustInput(UIView *input, CGFloat kbHeight, NSTimeInterval durat
                     f.origin = CGPointZero;
                     main.frame = f;
                 }
-                hidden.inputAccessoryView = main;
-                // Force keyboard to reload accessory
-                if (hidden.isFirstResponder) [hidden reloadInputViews];
-                else {
-                    // Will be picked up when hidden becomes firstResponder
-                    NSLog(@"[KeyboardFix] set accessory (deferred reload) %p", main);
-                }
-                NSLog(@"[KeyboardFix] set accessory main=%p hidden=%p", main, hidden);
+                tf.inputAccessoryView = main;
+                if (tf.isFirstResponder) [tf reloadInputViews];
+                NSLog(@"[KeyboardFix] set accessory on %@ %p", tf == hidden ? @"hidden" : @"inputTF", main);
             }
-            if (hidden.inputAccessoryView == main) {
-                // Accessory handles Y, just ensure no leftover transform
-                if (!CGAffineTransformIsIdentity(main.transform)) {
-                    main.transform = CGAffineTransformIdentity;
-                }
-                // If keyboard is visible, accessory is already above it – nothing else
-                if (kbHeight > 0) return;
-            }
+            if (tf.inputAccessoryView == main) accessorySet = YES;
+        }
+        if (accessorySet) {
+            if (!CGAffineTransformIsIdentity(main.transform)) main.transform = CGAffineTransformIdentity;
+            if (kbHeight > 0) return;
         }
         // Fallback: manual transform if accessory not available or hidden is nil
         if (![main isKindOfClass:UIView.class] || !main.superview) return;
@@ -1432,15 +1431,37 @@ static void TF_handleKeyboard(NSNotification *note) {
 }
 static void TF_ensureAccessory(id self) {
     @try {
-        UIView *main = nil; UITextField *hidden = nil;
+        UIView *main = nil; UITextField *hidden = nil; UITextField *inputTF = nil;
         @try { main = [self valueForKey:@"mainInputView"]; } @catch (__unused NSException *e) {}
         @try { hidden = [self valueForKey:@"hiddenTextField"]; } @catch (__unused NSException *e) {}
-        if ([hidden isKindOfClass:UITextField.class] && [main isKindOfClass:UIView.class] && hidden.inputAccessoryView != main) {
+        @try { inputTF = [self valueForKey:@"inputTextField"]; } @catch (__unused NSException *e) {}
+        if ([main isKindOfClass:UIView.class]) {
             if (main.bounds.size.width < 10 || main.bounds.size.height < 10) {
-                CGRect f = main.frame; if (f.size.width < 10) f.size.width = UIScreen.mainScreen.bounds.size.width; if (f.size.height < 10) f.size.height = 56; f.origin = CGPointZero; main.frame = f;
+                CGRect f = main.frame;
+                if (f.size.width < 10) f.size.width = UIScreen.mainScreen.bounds.size.width;
+                if (f.size.height < 10) f.size.height = 56;
+                f.origin = CGPointZero;
+                main.frame = f;
+                // Ensure autolayout doesn't collapse it
+                main.autoresizingMask = UIViewAutoresizingFlexibleWidth;
             }
+        }
+        BOOL didSet = NO;
+        if ([hidden isKindOfClass:UITextField.class] && hidden.inputAccessoryView != main) {
             hidden.inputAccessoryView = main;
-            NSLog(@"[KeyboardFix] pre-set accessory %p", main);
+            didSet = YES;
+            NSLog(@"[KeyboardFix] pre-set accessory on hidden %p", main);
+        }
+        if ([inputTF isKindOfClass:UITextField.class] && inputTF.inputAccessoryView != main) {
+            inputTF.inputAccessoryView = main;
+            didSet = YES;
+            NSLog(@"[KeyboardFix] pre-set accessory on inputTF %p", main);
+        }
+        if (didSet) {
+            // If either field is first responder, force reload
+            if ([hidden isFirstResponder]) [hidden reloadInputViews];
+            if ([inputTF isFirstResponder]) [inputTF reloadInputViews];
+            // Also reload if not yet first responder – next becomeFirstResponder will pick it up
         }
     } @catch (__unused NSException *e) {}
 }
