@@ -3,25 +3,31 @@
 
 // iOS 27 compatibility for Filza's legacy TGFocusedInput flow.
 //
-// The original Filza binary does this sequence:
+// The supplied Filza binary does this sequence:
 //   1. hiddenTextField.inputAccessoryView = mainInputView
 //   2. hiddenTextField becomes first responder
 //   3. textFieldDidBeginEditing(hiddenTextField) schedules, after 100 ms,
 //      inputTextField.becomeFirstResponder()
 //
-// inputTextField itself lives *inside* mainInputView. On iOS 27 the 100 ms
-// hand-off occurs while the keyboard/accessory host is still presenting. The
-// first presentation is therefore interrupted and UIKeyboardItemContainerView
-// can remain at the physical bottom of the app instead of finishing its normal
-// keyboard-attached layout. Changing input mode later rebuilds the keyboard
-// host, which is why the same view suddenly moves to the correct position.
+// inputTextField itself lives inside mainInputView. On iOS 27 that fixed 100 ms
+// hand-off can happen before UIKit commits the first keyboard/accessory host,
+// leaving UIKeyboardItemContainerView at the bottom of the screen. Waiting all
+// the way for UIKeyboardDidShow fixes the race, but makes the edit field appear
+// only after the keyboard animation finishes.
 //
-// Do not move views, change constraints, install a replacement UI, or call
-// reloadInputViews. We only replace the hidden-field branch of
-// textFieldDidBeginEditing: and perform Filza's intended responder hand-off
-// after UIKit reports that the keyboard presentation has completed.
+// Final strategy:
+//   - suppress Filza's fixed 100 ms hidden-field branch;
+//   - wait for UIKeyboardWillShow, which means UIKit has committed a real
+//     keyboard presentation;
+//   - on the next main-loop turn, verify mainInputView is actually mounted in a
+//     separate keyboard window, then perform Filza's intended responder handoff;
+//   - retain UIKeyboardDidShow and a long timeout only as fallbacks.
+//
+// We never move views, change constraints, replace the UI, assign a different
+// accessory view, or call reloadInputViews.
 
 static IMP gOrigTGFocusedDidBegin = NULL;
+static const void *kKeyboardWillShowObserverKey = &kKeyboardWillShowObserverKey;
 static const void *kKeyboardDidShowObserverKey = &kKeyboardDidShowObserverKey;
 static const void *kKeyboardFocusGenerationKey = &kKeyboardFocusGenerationKey;
 
@@ -31,30 +37,67 @@ static id TGFIValue(id self, NSString *key) {
     @catch (__unused NSException *e) { return nil; }
 }
 
-static void TGFIRemovePendingObserver(id self) {
-    id token = objc_getAssociatedObject(self, kKeyboardDidShowObserverKey);
-    if (token) {
-        [NSNotificationCenter.defaultCenter removeObserver:token];
-        objc_setAssociatedObject(self, kKeyboardDidShowObserverKey, nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+static void TGFIRemoveObserverForKey(id self, const void *key) {
+    id token = objc_getAssociatedObject(self, key);
+    if (!token) return;
+    [NSNotificationCenter.defaultCenter removeObserver:token];
+    objc_setAssociatedObject(self, key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static void TGFIFocusVisibleFieldIfStillNeeded(id self, NSString *reason) {
+static void TGFIRemovePendingObservers(id self) {
+    TGFIRemoveObserverForKey(self, kKeyboardWillShowObserverKey);
+    TGFIRemoveObserverForKey(self, kKeyboardDidShowObserverKey);
+}
+
+static BOOL TGFICurrentGenerationMatches(id self, NSUInteger generation) {
+    NSNumber *current = objc_getAssociatedObject(self, kKeyboardFocusGenerationKey);
+    return current.unsignedIntegerValue == generation;
+}
+
+static BOOL TGFIKeyboardHostCommitted(id self) {
+    if (![self isKindOfClass:UIView.class]) return NO;
+
+    UIView *main = TGFIValue(self, @"mainInputView");
+    UITextField *hidden = TGFIValue(self, @"hiddenTextField");
+    if (![main isKindOfClass:UIView.class] ||
+        ![hidden isKindOfClass:UITextField.class]) return NO;
+
+    UIWindow *appWindow = ((UIView *)self).window;
+    UIWindow *keyboardWindow = main.window;
+
+    // This is the state captured in the device probe once UIKit has taken
+    // ownership of the accessory: hidden still owns mainInputView as its
+    // inputAccessoryView, while mainInputView has been re-parented into a
+    // keyboard-host window (UITextEffectsWindow on the tested iOS 27 build).
+    if (!appWindow || !keyboardWindow || keyboardWindow == appWindow) return NO;
+    if (!main.superview || hidden.inputAccessoryView != main) return NO;
+    if (CGRectGetWidth(main.bounds) < 1.0 || CGRectGetHeight(main.bounds) < 1.0) return NO;
+
+    return YES;
+}
+
+static BOOL TGFIFocusVisibleFieldIfStillNeeded(id self, NSString *reason,
+                                                BOOL requireCommittedHost) {
     UITextField *hidden = TGFIValue(self, @"hiddenTextField");
     UITextField *input = TGFIValue(self, @"inputTextField");
     if (![hidden isKindOfClass:UITextField.class] ||
-        ![input isKindOfClass:UITextField.class]) return;
+        ![input isKindOfClass:UITextField.class]) return NO;
 
-    // Only complete the hand-off Filza originally wanted. If the user has
-    // already cancelled, another responder won, or the view left its window,
-    // leave the responder chain alone.
-    if (!hidden.isFirstResponder || input.isFirstResponder || !((UIView *)self).window)
-        return;
+    if (!hidden.isFirstResponder || input.isFirstResponder ||
+        ![self isKindOfClass:UIView.class] || !((UIView *)self).window)
+        return NO;
 
-    NSLog(@"[RenameResponderFix] focus input after %@ hidden=%p input=%p",
-          reason, hidden, input);
-    [input becomeFirstResponder];
+    if (requireCommittedHost && !TGFIKeyboardHostCommitted(self)) {
+        NSLog(@"[RenameResponderFix] %@ arrived but keyboard host is not committed yet",
+              reason);
+        return NO;
+    }
+
+    UIView *main = TGFIValue(self, @"mainInputView");
+    NSLog(@"[RenameResponderFix] focus input after %@ hidden=%p input=%p mainWindow=%@ super=%@",
+          reason, hidden, input,
+          NSStringFromClass(main.window.class), NSStringFromClass(main.superview.class));
+    return [input becomeFirstResponder];
 }
 
 static void hook_TGFocused_textFieldDidBeginEditing(id self, SEL _cmd,
@@ -62,18 +105,17 @@ static void hook_TGFocused_textFieldDidBeginEditing(id self, SEL _cmd,
     UITextField *hidden = TGFIValue(self, @"hiddenTextField");
 
     if (![hidden isKindOfClass:UITextField.class] || field != hidden) {
-        // Preserve Filza's original inputTextField branch. That branch sets
-        // _blockHiddenTextField and calls initiateUI: for the visible field.
+        // Preserve Filza's original visible-input branch. Disassembly shows it
+        // sets _blockHiddenTextField and calls initiateUI: (RenameView uses that
+        // to select the filename excluding the extension).
         if (gOrigTGFocusedDidBegin)
             ((void(*)(id,SEL,UITextField *))gOrigTGFocusedDidBegin)(self, _cmd, field);
         return;
     }
 
-    // IMPORTANT: do not call the original hiddenTextField branch here.
-    // Disassembly of the supplied Filza binary shows that branch has no other
-    // side effects; it only dispatches inputTextField.becomeFirstResponder()
-    // after 0.1 seconds. That exact early hand-off is the race we are removing.
-    TGFIRemovePendingObserver(self);
+    // Do not call Filza's hidden-field branch. Its only behavior is a fixed
+    // dispatch_after(100 ms) -> inputTextField.becomeFirstResponder().
+    TGFIRemovePendingObservers(self);
 
     NSUInteger generation =
         [objc_getAssociatedObject(self, kKeyboardFocusGenerationKey) unsignedIntegerValue] + 1;
@@ -81,44 +123,73 @@ static void hook_TGFocused_textFieldDidBeginEditing(id self, SEL _cmd,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     __weak id weakSelf = self;
-    __block id token = nil;
-    token = [NSNotificationCenter.defaultCenter
+
+    __block id willToken = nil;
+    willToken = [NSNotificationCenter.defaultCenter
+        addObserverForName:UIKeyboardWillShowNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *note) {
+        id strongSelf = weakSelf;
+        if (!strongSelf) {
+            if (willToken) [NSNotificationCenter.defaultCenter removeObserver:willToken];
+            return;
+        }
+        if (!TGFICurrentGenerationMatches(strongSelf, generation)) return;
+
+        CGRect endFrame = [note.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+        if (CGRectGetWidth(endFrame) < 1.0 || CGRectGetHeight(endFrame) < 1.0) return;
+
+        // Never change responder from inside UIKit's keyboard notification
+        // callback itself. One main-loop turn lets UIKit commit the host/window
+        // transaction first, while still being far earlier than DidShow.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            id innerSelf = weakSelf;
+            if (!innerSelf || !TGFICurrentGenerationMatches(innerSelf, generation)) return;
+            if (TGFIFocusVisibleFieldIfStillNeeded(innerSelf,
+                    @"UIKeyboardWillShow + next runloop", YES)) {
+                TGFIRemovePendingObservers(innerSelf);
+            }
+        });
+    }];
+    objc_setAssociatedObject(self, kKeyboardWillShowObserverKey, willToken,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    // Proven-safe fallback from the previous test build. This remains in case a
+    // keyboard implementation sends WillShow before the accessory is mounted.
+    __block id didToken = nil;
+    didToken = [NSNotificationCenter.defaultCenter
         addObserverForName:UIKeyboardDidShowNotification
                     object:nil
                      queue:NSOperationQueue.mainQueue
                 usingBlock:^(__unused NSNotification *note) {
         id strongSelf = weakSelf;
         if (!strongSelf) {
-            if (token) [NSNotificationCenter.defaultCenter removeObserver:token];
+            if (didToken) [NSNotificationCenter.defaultCenter removeObserver:didToken];
             return;
         }
+        if (!TGFICurrentGenerationMatches(strongSelf, generation)) return;
 
-        NSNumber *current = objc_getAssociatedObject(strongSelf,
-                                                      kKeyboardFocusGenerationKey);
-        if (current.unsignedIntegerValue != generation) return;
-
-        TGFIFocusVisibleFieldIfStillNeeded(strongSelf, @"UIKeyboardDidShow");
-        TGFIRemovePendingObserver(strongSelf);
+        if (TGFIFocusVisibleFieldIfStillNeeded(strongSelf,
+                @"UIKeyboardDidShow fallback", NO)) {
+            TGFIRemovePendingObservers(strongSelf);
+        }
     }];
-
-    objc_setAssociatedObject(self, kKeyboardDidShowObserverKey, token,
+    objc_setAssociatedObject(self, kKeyboardDidShowObserverKey, didToken,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    // Hardware keyboards / unusual input methods may not emit DidShow. Keep a
-    // conservative fallback well beyond the normal keyboard animation instead
-    // of Filza's original 100 ms race.
+    // Hardware keyboards / unusual input methods may emit neither notification.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 900 * NSEC_PER_MSEC),
                    dispatch_get_main_queue(), ^{
         id strongSelf = weakSelf;
-        if (!strongSelf) return;
-        NSNumber *current = objc_getAssociatedObject(strongSelf,
-                                                      kKeyboardFocusGenerationKey);
-        if (current.unsignedIntegerValue != generation) return;
-        TGFIFocusVisibleFieldIfStillNeeded(strongSelf, @"900ms fallback");
-        TGFIRemovePendingObserver(strongSelf);
+        if (!strongSelf || !TGFICurrentGenerationMatches(strongSelf, generation)) return;
+        if (TGFIFocusVisibleFieldIfStillNeeded(strongSelf,
+                @"900ms fallback", NO)) {
+            TGFIRemovePendingObservers(strongSelf);
+        }
     });
 
-    NSLog(@"[RenameResponderFix] hidden field began; waiting for keyboard DidShow");
+    NSLog(@"[RenameResponderFix] hidden field began; waiting for keyboard WillShow commit");
 }
 
 static void InstallTGFocusedResponderTimingFix(void) {
