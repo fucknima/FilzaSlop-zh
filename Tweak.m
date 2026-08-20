@@ -14,6 +14,7 @@
 
 #include "MCMFilzaIntegration.h"
 #include "PosterBoardFeature.h"
+#include "ArchiveUnzipFix.h"
 
 #pragma mark - Root Helper Hooks
 
@@ -163,12 +164,11 @@ static void hook_sendObjectWithReplyAsync(id self, SEL _cmd, id msg, id queue, i
     if (completion) { void (^block)(id) = completion; block(nil); }
 }
 
-#pragma mark - Zip/Unzip via minizip C API (linked in Filza binary)
+#pragma mark - Zip creation via minizip C API (linked in Filza binary)
 
 // minizip C functions — statically linked in Filza, resolve via dlsym at runtime
 #include <dlfcn.h>
 typedef void* zipFile64;
-typedef void* unzFile64;
 
 // Function pointer types
 static zipFile64 (*p_zipOpen64)(const char*, int);
@@ -176,37 +176,25 @@ static int (*p_zipOpenNewFileInZip64)(zipFile64, const char*, const void*, const
 static int (*p_zipWriteInFileInZip)(zipFile64, const void*, unsigned);
 static int (*p_zipCloseFileInZip)(zipFile64);
 static int (*p_zipClose)(zipFile64, const char*);
-static unzFile64 (*p_unzOpen64)(const char*);
-static int (*p_unzGoToFirstFile)(unzFile64);
-static int (*p_unzGoToNextFile)(unzFile64);
-static int (*p_unzGetCurrentFileInfo64)(unzFile64, void*, char*, unsigned long, void*, unsigned long, char*, unsigned long);
-static int (*p_unzOpenCurrentFilePassword)(unzFile64, const char*);
-static int (*p_unzReadCurrentFile)(unzFile64, void*, unsigned);
-static int (*p_unzCloseCurrentFile)(unzFile64);
-static int (*p_unzClose)(unzFile64);
 
-static bool g_minizipLoaded = false;
-static void loadMinizip(void) {
-    if (g_minizipLoaded) return;
+static bool g_zipMinizipLoaded = false;
+static bool g_zipMinizipLoadAttempted = false;
+static void loadZipMinizip(void) {
+    if (g_zipMinizipLoadAttempted) return;
+    g_zipMinizipLoadAttempted = true;
     // RTLD_DEFAULT searches all loaded images including Filza's statically linked minizip
     p_zipOpen64 = dlsym(RTLD_DEFAULT, "zipOpen64");
     p_zipOpenNewFileInZip64 = dlsym(RTLD_DEFAULT, "zipOpenNewFileInZip64");
     p_zipWriteInFileInZip = dlsym(RTLD_DEFAULT, "zipWriteInFileInZip");
     p_zipCloseFileInZip = dlsym(RTLD_DEFAULT, "zipCloseFileInZip");
     p_zipClose = dlsym(RTLD_DEFAULT, "zipClose");
-    p_unzOpen64 = dlsym(RTLD_DEFAULT, "unzOpen64");
-    p_unzGoToFirstFile = dlsym(RTLD_DEFAULT, "unzGoToFirstFile");
-    p_unzGoToNextFile = dlsym(RTLD_DEFAULT, "unzGoToNextFile");
-    p_unzGetCurrentFileInfo64 = dlsym(RTLD_DEFAULT, "unzGetCurrentFileInfo64");
-    p_unzOpenCurrentFilePassword = dlsym(RTLD_DEFAULT, "unzOpenCurrentFilePassword");
-    p_unzReadCurrentFile = dlsym(RTLD_DEFAULT, "unzReadCurrentFile");
-    p_unzCloseCurrentFile = dlsym(RTLD_DEFAULT, "unzCloseCurrentFile");
-    p_unzClose = dlsym(RTLD_DEFAULT, "unzClose");
-    g_minizipLoaded = (p_zipOpen64 && p_unzOpen64);
-    NSLog(@"[Tweak] minizip loaded: %d (zip=%p unz=%p)", g_minizipLoaded, p_zipOpen64, p_unzOpen64);
+    g_zipMinizipLoaded = p_zipOpen64 && p_zipOpenNewFileInZip64 &&
+        p_zipWriteInFileInZip && p_zipCloseFileInZip && p_zipClose;
+    NSLog(@"[Tweak] zip minizip loaded: %d (zip=%p)",
+          g_zipMinizipLoaded, p_zipOpen64);
 }
 
-static IMP orig_ZipFiles = NULL, orig_unZipFile = NULL, orig_unZipFilePassword = NULL;
+static IMP orig_ZipFiles = NULL;
 
 // Recursively add files to a zip archive using minizip C API
 static void addFileToZip(zipFile64 zf, NSString *basePath, NSString *relativePath) {
@@ -234,8 +222,8 @@ static void addFileToZip(zipFile64 zf, NSString *basePath, NSString *relativePat
 // Hook: -[Zipper ZipFiles:toFilePath:currentDirectory:]
 static id hook_ZipFiles(id self, SEL _cmd, id files, id toFilePath, id currentDirectory) {
     @try {
-        loadMinizip();
-        if (!g_minizipLoaded) return orig_ZipFiles ? ((id(*)(id,SEL,id,id,id))orig_ZipFiles)(self, _cmd, files, toFilePath, currentDirectory) : nil;
+        loadZipMinizip();
+        if (!g_zipMinizipLoaded) return orig_ZipFiles ? ((id(*)(id,SEL,id,id,id))orig_ZipFiles)(self, _cmd, files, toFilePath, currentDirectory) : nil;
         zipFile64 zf = p_zipOpen64(((NSString *)toFilePath).UTF8String, 0); // APPEND_STATUS_CREATE=0
         if (!zf) { NSLog(@"[Tweak] zipOpen64 failed"); return nil; }
 
@@ -256,71 +244,6 @@ static id hook_ZipFiles(id self, SEL _cmd, id files, id toFilePath, id currentDi
         }
         return nil;
     } @catch (NSException *e) { NSLog(@"[Tweak] Zip error: %@", e); return nil; }
-}
-
-// Hook: -[Zipper unZipFile:toPath:currentDirectory:outMessage:]
-static id hook_unZipFile(id self, SEL _cmd, id zipPath, id toPath, id currentDir, id *outMsg) {
-    @try {
-        loadMinizip();
-        if (!g_minizipLoaded) return orig_unZipFile ? ((id(*)(id,SEL,id,id,id,id*))orig_unZipFile)(self, _cmd, zipPath, toPath, currentDir, outMsg) : nil;
-        // zipPath is a FileItem, get the actual path string
-        NSString *zipPathStr = zipPath;
-        if ([zipPath respondsToSelector:NSSelectorFromString(@"filePath")])
-            zipPathStr = [zipPath performSelector:NSSelectorFromString(@"filePath")];
-
-        unzFile64 uf = p_unzOpen64(((NSString *)zipPathStr).UTF8String);
-        if (!uf) { if (outMsg) *outMsg = @"打开 ZIP 失败"; return nil; }
-
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *destPath = toPath;
-        [fm createDirectoryAtPath:destPath withIntermediateDirectories:YES attributes:nil error:nil];
-
-        char filename[512];
-        uint8_t buf[32768];
-        int ret = p_unzGoToFirstFile(uf);
-        while (ret == 0) {
-            p_unzGetCurrentFileInfo64(uf, NULL, filename, sizeof(filename), NULL, 0, NULL, 0);
-            NSString *name = [NSString stringWithUTF8String:filename];
-            NSString *fullPath = [destPath stringByAppendingPathComponent:name];
-
-            if ([name hasSuffix:@"/"]) {
-                [fm createDirectoryAtPath:fullPath withIntermediateDirectories:YES attributes:nil error:nil];
-            } else {
-                [fm createDirectoryAtPath:[fullPath stringByDeletingLastPathComponent]
-                  withIntermediateDirectories:YES attributes:nil error:nil];
-
-                if (p_unzOpenCurrentFilePassword(uf, NULL) == 0) {
-                    NSMutableData *fileData = [NSMutableData data];
-                    int bytesRead;
-                    while ((bytesRead = p_unzReadCurrentFile(uf, buf, sizeof(buf))) > 0)
-                        [fileData appendBytes:buf length:bytesRead];
-                    p_unzCloseCurrentFile(uf);
-                    [fileData writeToFile:fullPath atomically:YES];
-                }
-            }
-            ret = p_unzGoToNextFile(uf);
-        }
-        p_unzClose(uf);
-
-        if (outMsg) *outMsg = @"完成";
-
-        // Return array of extracted FileItems (matching original behavior)
-        NSArray *contents = [fm contentsOfDirectoryAtPath:destPath error:nil];
-        if (contents.count > 0) {
-            Class FI = NSClassFromString(@"FileItem");
-            if (FI) {
-                id item = [[FI alloc] init];
-                ((void(*)(id,SEL,id,id))objc_msgSend)(item, NSSelectorFromString(@"setFilePath:attribute:"), destPath, nil);
-                return @[item];
-            }
-        }
-        return nil;
-    } @catch (NSException *e) { NSLog(@"[Tweak] Unzip error: %@", e); if (outMsg) *outMsg = [e reason]; return nil; }
-}
-
-// Hook: -[Zipper unZipFile:toPath:currentDirectory:withPassword:outMessage:]
-static id hook_unZipFilePassword(id self, SEL _cmd, id zipPath, id toPath, id currentDir, id password, id *outMsg) {
-    return hook_unZipFile(self, @selector(unZipFile:toPath:currentDirectory:outMessage:), zipPath, toPath, currentDir, outMsg);
 }
 
 #pragma mark - Apps Manager Fix
@@ -1429,14 +1352,11 @@ static void installHooks(void) {
     }
     Class zipper = NSClassFromString(@"Zipper");
     if (zipper) {
-        Method m;
-        m = class_getInstanceMethod(zipper, NSSelectorFromString(@"ZipFiles:toFilePath:currentDirectory:"));
+        Method m = class_getInstanceMethod(zipper,
+            NSSelectorFromString(@"ZipFiles:toFilePath:currentDirectory:"));
         if (m) { orig_ZipFiles = method_getImplementation(m); method_setImplementation(m, (IMP)hook_ZipFiles); }
-        m = class_getInstanceMethod(zipper, NSSelectorFromString(@"unZipFile:toPath:currentDirectory:outMessage:"));
-        if (m) { orig_unZipFile = method_getImplementation(m); method_setImplementation(m, (IMP)hook_unZipFile); }
-        m = class_getInstanceMethod(zipper, NSSelectorFromString(@"unZipFile:toPath:currentDirectory:withPassword:outMessage:"));
-        if (m) { orig_unZipFilePassword = method_getImplementation(m); method_setImplementation(m, (IMP)hook_unZipFilePassword); }
     }
+    FSInstallArchiveUnzipFix();
 
     // License/integrity bypass
     Class alertCtrl = NSClassFromString(@"TGAlertController");

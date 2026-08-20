@@ -1,13 +1,18 @@
-#import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 
+#import "ArchiveUnzipFix.h"
+
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -228,6 +233,9 @@ static NSString *FSDecodeZipFilename(const void *bytes, NSUInteger length)
 static NSString *FSSafeRelativeZipPath(NSString *rawName)
 {
     if (rawName.length == 0) return nil;
+    for (NSUInteger index = 0; index < rawName.length; index++) {
+        if ([rawName characterAtIndex:index] == 0) return nil;
+    }
     NSString *name = [rawName stringByReplacingOccurrencesOfString:@"\\"
                                                          withString:@"/"];
     if ([name hasPrefix:@"/"]) return nil;
@@ -257,29 +265,40 @@ static id FSFileItemAtPath(NSString *path)
     if (!fileItemClass) return nil;
     id item = [[fileItemClass alloc] init];
     SEL selector = NSSelectorFromString(@"setFilePath:attribute:");
-    if ([item respondsToSelector:selector])
-        ((void (*)(id, SEL, id, id))objc_msgSend)(item, selector, path, nil);
+    if (![item respondsToSelector:selector]) return nil;
+    ((void (*)(id, SEL, id, id))objc_msgSend)(item, selector, path, nil);
     return item;
 }
 
-static id FSArchiveResultForDestination(NSString *destination,
-                                        NSString *currentDirectory,
-                                        NSSet<NSString *> *before)
+static NSArray *FSArchiveResultForDestination(NSString *destination,
+                                              NSString *currentDirectory,
+                                              NSArray<NSString *> *topLevelNames)
 {
     NSFileManager *manager = NSFileManager.defaultManager;
     NSString *dest = destination.stringByStandardizingPath;
     NSString *current = currentDirectory.stringByStandardizingPath;
     if ([dest isEqualToString:current]) {
-        NSArray<NSString *> *after = [manager contentsOfDirectoryAtPath:dest error:nil] ?: @[];
         NSMutableArray *items = [NSMutableArray array];
-        for (NSString *name in after) {
-            if ([before containsObject:name]) continue;
-            id item = FSFileItemAtPath([dest stringByAppendingPathComponent:name]);
+        for (NSString *name in topLevelNames) {
+            NSString *path = [dest stringByAppendingPathComponent:name];
+            if (![manager fileExistsAtPath:path]) continue;
+            id item = FSFileItemAtPath(path);
             if (item) [items addObject:item];
         }
-        return items.count ? items : nil;
+        return items.count ? [items copy] : nil;
     }
-    return [manager fileExistsAtPath:dest] ? FSFileItemAtPath(dest) : nil;
+    id item = [manager fileExistsAtPath:dest] ? FSFileItemAtPath(dest) : nil;
+    return item ? @[item] : nil;
+}
+
+static NSArray *FSValidatedArchiveResult(id result, NSString **outMessage)
+{
+    if (!result) return nil;
+    if ([result isKindOfClass:NSArray.class]) return result;
+    NSLog(@"[ArchiveUnzipFix] rejected invalid result class=%@",
+          NSStringFromClass([result class]));
+    FSSetArchiveMessage(outMessage, @"解压结果类型无效");
+    return nil;
 }
 
 static BOOL FSWriteCurrentZipEntry(FSUnzFile archive, NSString *path,
@@ -295,13 +314,15 @@ static BOOL FSWriteCurrentZipEntry(FSUnzFile archive, NSString *path,
         return NO;
     }
 
-    int descriptor = open(path.fileSystemRepresentation,
-        O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW,
-        (mode & 0777) ?: 0644);
+    NSString *temporaryPath = [path.stringByDeletingLastPathComponent
+        stringByAppendingPathComponent:[NSString stringWithFormat:
+            @".filza-unzip-%@.tmp", NSUUID.UUID.UUIDString]];
+    int descriptor = open(temporaryPath.fileSystemRepresentation,
+        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (descriptor < 0) {
         int saved = errno;
         pFSUnzCloseCurrentFile(archive);
-        FSSetArchiveMessage(outMessage, @"无法创建解压文件：%@（%s）",
+        FSSetArchiveMessage(outMessage, @"无法创建解压临时文件：%@（%s）",
                             path, strerror(saved));
         return NO;
     }
@@ -332,7 +353,19 @@ static BOOL FSWriteCurrentZipEntry(FSUnzFile archive, NSString *path,
         }
         if (!success) break;
     }
-    close(descriptor);
+    mode_t permissions = (mode & 0777) ?: 0644;
+    if (success && fchmod(descriptor, permissions) != 0) {
+        int saved = errno;
+        FSSetArchiveMessage(outMessage, @"无法设置解压文件权限：%@（%s）",
+                            path, strerror(saved));
+        success = NO;
+    }
+    if (close(descriptor) != 0 && success) {
+        int saved = errno;
+        FSSetArchiveMessage(outMessage, @"关闭解压临时文件失败：%@（%s）",
+                            path, strerror(saved));
+        success = NO;
+    }
 
     int closeResult = pFSUnzCloseCurrentFile(archive);
     if (success && closeResult != 0) {
@@ -341,16 +374,365 @@ static BOOL FSWriteCurrentZipEntry(FSUnzFile archive, NSString *path,
         success = NO;
     }
     if (!success) {
-        unlink(path.fileSystemRepresentation);
+        unlink(temporaryPath.fileSystemRepresentation);
         return NO;
     }
-    chmod(path.fileSystemRepresentation, (mode & 0777) ?: 0644);
+    if (rename(temporaryPath.fileSystemRepresentation,
+               path.fileSystemRepresentation) != 0) {
+        int saved = errno;
+        unlink(temporaryPath.fileSystemRepresentation);
+        FSSetArchiveMessage(outMessage, @"提交解压文件失败：%@（%s）",
+                            path, strerror(saved));
+        return NO;
+    }
     return YES;
 }
 
-static id FSExtractZip(id zipArgument, id destinationArgument,
-                       id currentDirectoryArgument, id passwordArgument,
-                       NSString **outMessage)
+static void FSCleanupCreatedDirectories(NSArray<NSString *> *directories)
+{
+    for (NSString *path in directories.reverseObjectEnumerator) {
+        if (rmdir(path.fileSystemRepresentation) != 0 &&
+            errno != ENOENT && errno != ENOTEMPTY) {
+            NSLog(@"[ArchiveUnzipFix] cannot remove rollback directory %@: %s",
+                  path, strerror(errno));
+        }
+    }
+}
+
+static BOOL FSCreateDirectoryChain(NSString *directory,
+                                   NSMutableArray<NSString *> *createdDirectories,
+                                   NSString **outMessage)
+{
+    NSMutableArray<NSString *> *missing = [NSMutableArray array];
+    NSString *cursor = directory.stringByStandardizingPath;
+    while (cursor.length) {
+        struct stat status = {0};
+        if (stat(cursor.fileSystemRepresentation, &status) == 0) {
+            if (!S_ISDIR(status.st_mode)) {
+                FSSetArchiveMessage(outMessage, @"解压目标不是目录：%@", cursor);
+                return NO;
+            }
+            break;
+        }
+        int saved = errno;
+        struct stat linkStatus = {0};
+        if (lstat(cursor.fileSystemRepresentation, &linkStatus) == 0 &&
+            S_ISLNK(linkStatus.st_mode)) {
+            FSSetArchiveMessage(outMessage, @"解压目标包含失效的符号链接：%@", cursor);
+            return NO;
+        }
+        if (saved != ENOENT) {
+            FSSetArchiveMessage(outMessage, @"无法检查解压目录：%@（%s）",
+                                cursor, strerror(saved));
+            return NO;
+        }
+        [missing addObject:cursor];
+        NSString *parent = cursor.stringByDeletingLastPathComponent;
+        if (!parent.length || [parent isEqualToString:cursor]) {
+            FSSetArchiveMessage(outMessage, @"解压目标路径无效：%@", directory);
+            return NO;
+        }
+        cursor = parent;
+    }
+
+    for (NSString *path in missing.reverseObjectEnumerator) {
+        if (mkdir(path.fileSystemRepresentation, 0755) != 0) {
+            int saved = errno;
+            struct stat status = {0};
+            if (saved == EEXIST &&
+                stat(path.fileSystemRepresentation, &status) == 0 &&
+                S_ISDIR(status.st_mode)) {
+                continue;
+            }
+            FSSetArchiveMessage(outMessage, @"无法创建解压目录：%@（%s）",
+                                path, strerror(saved));
+            return NO;
+        }
+        [createdDirectories addObject:path];
+    }
+    return YES;
+}
+
+static NSString *FSCanonicalDirectory(NSString *directory,
+                                      NSString **outMessage)
+{
+    char resolved[PATH_MAX] = {0};
+    if (!realpath(directory.fileSystemRepresentation, resolved)) {
+        int saved = errno;
+        FSSetArchiveMessage(outMessage, @"无法解析解压目标：%@（%s）",
+                            directory, strerror(saved));
+        return nil;
+    }
+    NSString *canonical = [NSFileManager.defaultManager
+        stringWithFileSystemRepresentation:resolved length:strlen(resolved)];
+    if (!canonical.length) {
+        FSSetArchiveMessage(outMessage, @"解压目标的真实路径无效：%@", directory);
+        return nil;
+    }
+    return canonical;
+}
+
+static NSString *FSCreateStagingDirectory(NSString *destination,
+                                          NSString **outMessage)
+{
+    for (NSUInteger attempt = 0; attempt < 3; attempt++) {
+        NSString *name = [NSString stringWithFormat:@".filza-unzip-stage-%@",
+                          NSUUID.UUID.UUIDString];
+        NSString *path = [destination stringByAppendingPathComponent:name];
+        if (mkdir(path.fileSystemRepresentation, 0700) == 0) return path;
+        if (errno != EEXIST) {
+            int saved = errno;
+            FSSetArchiveMessage(outMessage, @"无法创建解压暂存目录：%@（%s）",
+                                path, strerror(saved));
+            return nil;
+        }
+    }
+    FSSetArchiveMessage(outMessage, @"无法分配唯一的解压暂存目录");
+    return nil;
+}
+
+static BOOL FSEnsureSafeRelativeDirectory(
+    NSString *destination, NSString *relativeDirectory, mode_t mode,
+    NSMutableArray<NSString *> *createdDirectories, NSString **outMessage)
+{
+    if (!relativeDirectory.length || [relativeDirectory isEqualToString:@"."])
+        return YES;
+
+    NSArray<NSString *> *components =
+        [relativeDirectory componentsSeparatedByString:@"/"];
+    NSString *path = destination;
+    for (NSUInteger index = 0; index < components.count; index++) {
+        NSString *component = components[index];
+        if (!component.length || [component isEqualToString:@"."]) continue;
+        if ([component isEqualToString:@".."]) {
+            FSSetArchiveMessage(outMessage, @"解压提交路径无效：%@",
+                                relativeDirectory);
+            return NO;
+        }
+        path = [path stringByAppendingPathComponent:component];
+
+        struct stat status = {0};
+        if (lstat(path.fileSystemRepresentation, &status) == 0) {
+            if (S_ISLNK(status.st_mode)) {
+                FSSetArchiveMessage(outMessage,
+                    @"解压目标包含符号链接目录，已拒绝写入：%@", path);
+                return NO;
+            }
+            if (!S_ISDIR(status.st_mode)) {
+                FSSetArchiveMessage(outMessage,
+                    @"解压目标中的路径不是目录：%@", path);
+                return NO;
+            }
+            continue;
+        }
+        int saved = errno;
+        if (saved != ENOENT) {
+            FSSetArchiveMessage(outMessage, @"无法检查解压目标：%@（%s）",
+                                path, strerror(saved));
+            return NO;
+        }
+
+        BOOL finalComponent = index + 1 == components.count;
+        mode_t permissions = finalComponent ? ((mode & 0777) ?: 0755) : 0755;
+        if (mkdir(path.fileSystemRepresentation, permissions) != 0) {
+            saved = errno;
+            FSSetArchiveMessage(outMessage, @"无法创建解压目录：%@（%s）",
+                                path, strerror(saved));
+            return NO;
+        }
+        chmod(path.fileSystemRepresentation, permissions);
+        [createdDirectories addObject:path];
+    }
+    return YES;
+}
+
+static BOOL FSRollbackCommittedFiles(NSArray<NSDictionary *> *changes)
+{
+    BOOL complete = YES;
+    for (NSDictionary *change in changes.reverseObjectEnumerator) {
+        NSString *path = change[@"path"];
+        id backupValue = change[@"backup"];
+        NSString *backup = backupValue == NSNull.null ? nil : backupValue;
+        if (backup) {
+            if (rename(backup.fileSystemRepresentation,
+                       path.fileSystemRepresentation) != 0) {
+                NSLog(@"[ArchiveUnzipFix] cannot restore backup %@ -> %@: %s",
+                      backup, path, strerror(errno));
+                complete = NO;
+            }
+        } else if (unlink(path.fileSystemRepresentation) != 0 &&
+                   errno != ENOENT) {
+            NSLog(@"[ArchiveUnzipFix] cannot remove rollback file %@: %s",
+                  path, strerror(errno));
+            complete = NO;
+        }
+    }
+    return complete;
+}
+
+static BOOL FSCommitStagedExtraction(
+    NSString *stagingDirectory, NSString *destination,
+    NSDictionary<NSString *, NSNumber *> *directoryModes,
+    NSMutableArray<NSString *> *createdDirectories, NSString **outMessage)
+{
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSDirectoryEnumerator<NSString *> *enumerator =
+        [manager enumeratorAtPath:stagingDirectory];
+    if (!enumerator) {
+        FSSetArchiveMessage(outMessage, @"无法读取解压暂存目录");
+        return NO;
+    }
+
+    NSMutableArray<NSString *> *directories = [NSMutableArray array];
+    NSMutableArray<NSString *> *files = [NSMutableArray array];
+    for (NSString *relative in enumerator) {
+        NSString *path = [stagingDirectory stringByAppendingPathComponent:relative];
+        struct stat status = {0};
+        if (lstat(path.fileSystemRepresentation, &status) != 0) {
+            int saved = errno;
+            FSSetArchiveMessage(outMessage, @"无法检查解压暂存项目：%@（%s）",
+                                relative, strerror(saved));
+            return NO;
+        }
+        if (S_ISDIR(status.st_mode)) {
+            [directories addObject:relative];
+        } else if (S_ISREG(status.st_mode)) {
+            [files addObject:relative];
+        } else {
+            FSSetArchiveMessage(outMessage, @"解压暂存项目类型不受支持：%@",
+                                relative);
+            return NO;
+        }
+    }
+
+    [directories sortUsingComparator:^NSComparisonResult(NSString *left,
+                                                           NSString *right) {
+        NSUInteger leftDepth = [left componentsSeparatedByString:@"/"].count;
+        NSUInteger rightDepth = [right componentsSeparatedByString:@"/"].count;
+        if (leftDepth < rightDepth) return NSOrderedAscending;
+        if (leftDepth > rightDepth) return NSOrderedDescending;
+        return [left compare:right options:NSLiteralSearch];
+    }];
+
+    for (NSString *relative in directories) {
+        NSString *stagedPath =
+            [stagingDirectory stringByAppendingPathComponent:relative];
+        struct stat status = {0};
+        if (lstat(stagedPath.fileSystemRepresentation, &status) != 0) {
+            int saved = errno;
+            FSSetArchiveMessage(outMessage, @"无法检查暂存目录：%@（%s）",
+                                relative, strerror(saved));
+            return NO;
+        }
+        if (!FSEnsureSafeRelativeDirectory(destination, relative,
+                0755, createdDirectories, outMessage)) {
+            return NO;
+        }
+    }
+
+    NSMutableArray<NSDictionary *> *changes = [NSMutableArray array];
+    BOOL success = YES;
+    BOOL rollbackMayBeIncomplete = NO;
+    for (NSString *relative in files) {
+        NSString *parent = relative.stringByDeletingLastPathComponent;
+        if (!FSEnsureSafeRelativeDirectory(destination, parent, 0755,
+                                            createdDirectories, outMessage)) {
+            success = NO;
+            break;
+        }
+
+        NSString *source =
+            [stagingDirectory stringByAppendingPathComponent:relative];
+        NSString *target = [destination stringByAppendingPathComponent:relative];
+        NSString *backup = nil;
+        struct stat targetStatus = {0};
+        if (lstat(target.fileSystemRepresentation, &targetStatus) == 0) {
+            if (S_ISDIR(targetStatus.st_mode)) {
+                FSSetArchiveMessage(outMessage,
+                    @"无法用文件覆盖已有目录：%@", target);
+                success = NO;
+                break;
+            }
+            backup = [target.stringByDeletingLastPathComponent
+                stringByAppendingPathComponent:[NSString stringWithFormat:
+                    @".filza-unzip-backup-%@.tmp", NSUUID.UUID.UUIDString]];
+            if (rename(target.fileSystemRepresentation,
+                       backup.fileSystemRepresentation) != 0) {
+                int saved = errno;
+                FSSetArchiveMessage(outMessage, @"无法备份已有文件：%@（%s）",
+                                    target, strerror(saved));
+                success = NO;
+                break;
+            }
+        } else if (errno != ENOENT) {
+            int saved = errno;
+            FSSetArchiveMessage(outMessage, @"无法检查已有文件：%@（%s）",
+                                target, strerror(saved));
+            success = NO;
+            break;
+        }
+
+        if (rename(source.fileSystemRepresentation,
+                   target.fileSystemRepresentation) != 0) {
+            int saved = errno;
+            if (backup && rename(backup.fileSystemRepresentation,
+                                 target.fileSystemRepresentation) != 0) {
+                NSLog(@"[ArchiveUnzipFix] cannot restore immediate backup "
+                      @"%@ -> %@: %s", backup, target, strerror(errno));
+                rollbackMayBeIncomplete = YES;
+            }
+            FSSetArchiveMessage(outMessage, @"无法提交解压文件：%@（%s）",
+                                target, strerror(saved));
+            success = NO;
+            break;
+        }
+        [changes addObject:@{
+            @"path": target,
+            @"backup": backup ?: NSNull.null,
+        }];
+    }
+
+    if (!success) {
+        NSString *failureMessage = outMessage ? *outMessage : nil;
+        BOOL rollbackComplete = FSRollbackCommittedFiles(changes);
+        if (!rollbackComplete || rollbackMayBeIncomplete) {
+            FSSetArchiveMessage(outMessage,
+                @"%@；自动回滚未完整完成，隐藏备份已保留",
+                failureMessage ?: @"解压提交失败");
+        }
+        return NO;
+    }
+
+    NSSet<NSString *> *createdDirectorySet =
+        [NSSet setWithArray:createdDirectories];
+    for (NSString *relative in directories.reverseObjectEnumerator) {
+        NSNumber *modeValue = directoryModes[relative];
+        if (!modeValue) continue;
+        NSString *path = [destination stringByAppendingPathComponent:relative];
+        if (![createdDirectorySet containsObject:path]) continue;
+        mode_t permissions = (mode_t)(modeValue.unsignedShortValue & 0777);
+        if (!permissions) permissions = 0755;
+        if (chmod(path.fileSystemRepresentation, permissions) != 0) {
+            NSLog(@"[ArchiveUnzipFix] cannot apply directory mode to %@: %s",
+                  path, strerror(errno));
+        }
+    }
+
+    for (NSDictionary *change in changes) {
+        id backupValue = change[@"backup"];
+        if (backupValue == NSNull.null) continue;
+        NSString *backup = backupValue;
+        if (unlink(backup.fileSystemRepresentation) != 0 && errno != ENOENT) {
+            NSLog(@"[ArchiveUnzipFix] cannot remove committed backup %@: %s",
+                  backup, strerror(errno));
+        }
+    }
+    return YES;
+}
+
+static NSArray *FSExtractZip(id zipArgument, id destinationArgument,
+                             id currentDirectoryArgument, id passwordArgument,
+                             NSString **outMessage)
 {
     if (!FSLoadInProcessUnzip()) {
         FSSetArchiveMessage(outMessage, @"内置 ZIP 解压模块不可用");
@@ -374,22 +756,38 @@ static id FSExtractZip(id zipArgument, id destinationArgument,
         [(NSString *)passwordArgument length] > 0)
         password = [(NSString *)passwordArgument UTF8String];
 
-    NSFileManager *manager = NSFileManager.defaultManager;
-    NSError *directoryError = nil;
-    if (![manager createDirectoryAtPath:destination withIntermediateDirectories:YES
-                              attributes:@{NSFilePosixPermissions: @0755}
-                                   error:&directoryError]) {
-        FSSetArchiveMessage(outMessage, @"无法创建解压目录：%@", directoryError.localizedDescription);
-        return nil;
-    }
-
-    NSSet<NSString *> *before = [NSSet setWithArray:
-        [manager contentsOfDirectoryAtPath:destination error:nil] ?: @[]];
     FSUnzFile archive = pFSUnzOpen64(zipPath.fileSystemRepresentation);
     if (!archive) {
         FSSetArchiveMessage(outMessage, @"打开 ZIP 失败：%@", zipPath.lastPathComponent);
         return nil;
     }
+
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSMutableArray<NSString *> *createdDirectories = [NSMutableArray array];
+    if (!FSCreateDirectoryChain(destination, createdDirectories, outMessage)) {
+        pFSUnzClose(archive);
+        FSCleanupCreatedDirectories(createdDirectories);
+        return nil;
+    }
+    NSString *operationDestination =
+        FSCanonicalDirectory(destination, outMessage);
+    if (!operationDestination) {
+        pFSUnzClose(archive);
+        FSCleanupCreatedDirectories(createdDirectories);
+        return nil;
+    }
+    NSString *stagingDirectory =
+        FSCreateStagingDirectory(operationDestination, outMessage);
+    if (!stagingDirectory) {
+        pFSUnzClose(archive);
+        FSCleanupCreatedDirectories(createdDirectories);
+        return nil;
+    }
+
+    NSMutableOrderedSet<NSString *> *topLevelNames =
+        [NSMutableOrderedSet orderedSet];
+    NSMutableDictionary<NSString *, NSNumber *> *directoryModes =
+        [NSMutableDictionary dictionary];
 
     BOOL success = YES;
     NSUInteger extracted = 0;
@@ -431,18 +829,19 @@ static id FSExtractZip(id zipArgument, id destinationArgument,
         mode_t unixMode = (mode_t)((info.external_fa >> 16) & 0xffff);
         BOOL directoryEntry = [rawName hasSuffix:@"/"] || [rawName hasSuffix:@"\\"] ||
             S_ISDIR(unixMode);
-        NSString *fullPath = [destination stringByAppendingPathComponent:relative];
+        NSString *fullPath =
+            [stagingDirectory stringByAppendingPathComponent:relative];
 
         if (directoryEntry) {
             NSError *error = nil;
             if (![manager createDirectoryAtPath:fullPath withIntermediateDirectories:YES
-                                      attributes:@{NSFilePosixPermissions:
-                                          @((unixMode & 0777) ?: 0755)}
+                                      attributes:@{NSFilePosixPermissions: @0755}
                                            error:&error]) {
                 FSSetArchiveMessage(outMessage, @"创建解压目录失败：%@", error.localizedDescription);
                 success = NO;
                 break;
             }
+            directoryModes[relative] = @((unixMode & 0777) ?: 0755);
             extracted++;
         } else {
             NSError *parentError = nil;
@@ -462,6 +861,10 @@ static id FSExtractZip(id zipArgument, id destinationArgument,
             extracted++;
         }
 
+        NSString *topLevelName =
+            [[relative componentsSeparatedByString:@"/"] firstObject];
+        if (topLevelName.length) [topLevelNames addObject:topLevelName];
+
         cursorResult = pFSUnzGoToNextFile(archive);
         if (cursorResult != 0 && cursorResult != -100) {
             FSSetArchiveMessage(outMessage, @"继续读取 ZIP 失败（代码 %d）", cursorResult);
@@ -470,79 +873,141 @@ static id FSExtractZip(id zipArgument, id destinationArgument,
         }
     }
 
-    pFSUnzClose(archive);
-    if (!success) return nil;
+    int archiveCloseResult = pFSUnzClose(archive);
+    if (success && archiveCloseResult != 0) {
+        FSSetArchiveMessage(outMessage, @"关闭 ZIP 失败（代码 %d）",
+                            archiveCloseResult);
+        success = NO;
+    }
+    if (success) {
+        success = FSCommitStagedExtraction(stagingDirectory,
+                                           operationDestination,
+                                           directoryModes,
+                                           createdDirectories, outMessage);
+    }
+
+    NSError *cleanupError = nil;
+    if (![manager removeItemAtPath:stagingDirectory error:&cleanupError] &&
+        cleanupError.code != NSFileNoSuchFileError) {
+        NSLog(@"[ArchiveUnzipFix] cannot remove staging directory %@: %@",
+              stagingDirectory, cleanupError);
+    }
+    if (!success) {
+        FSCleanupCreatedDirectories(createdDirectories);
+        return nil;
+    }
     FSSetArchiveMessage(outMessage, @"完成（%lu 项）", (unsigned long)extracted);
     return FSArchiveResultForDestination(destination,
-        currentDirectory ?: destination, before);
+        currentDirectory ?: destination, topLevelNames.array);
 }
 
 #pragma mark - Zipper overrides
 
-static IMP gPreviousUnzip = NULL;
-static IMP gPreviousUnzipWithPassword = NULL;
-
-static id FSHookUnzip(id self, SEL _cmd, id zipPath, id toPath,
-                      id currentDirectory, NSString **outMessage)
+static NSArray *FSHookUnzip(id self, SEL _cmd, id zipPath, id toPath,
+                            id currentDirectory, NSString **outMessage)
 {
-    id result = FSExtractZip(zipPath, toPath, currentDirectory, nil, outMessage);
-    if (!result && !FSLoadInProcessUnzip() && gPreviousUnzip)
-        return ((id (*)(id, SEL, id, id, id, NSString **))gPreviousUnzip)(
-            self, _cmd, zipPath, toPath, currentDirectory, outMessage);
-    return result;
+    NSArray *result = FSExtractZip(zipPath, toPath, currentDirectory, nil,
+                                   outMessage);
+    return FSValidatedArchiveResult(result, outMessage);
 }
 
-static id FSHookUnzipWithPassword(id self, SEL _cmd, id zipPath, id toPath,
-                                  id currentDirectory, id password,
-                                  NSString **outMessage)
+static NSArray *FSHookUnzipWithPassword(id self, SEL _cmd, id zipPath, id toPath,
+                                        id currentDirectory, id password,
+                                        NSString **outMessage)
 {
-    id result = FSExtractZip(zipPath, toPath, currentDirectory, password, outMessage);
-    if (!result && !FSLoadInProcessUnzip() && gPreviousUnzipWithPassword)
-        return ((id (*)(id, SEL, id, id, id, id, NSString **))gPreviousUnzipWithPassword)(
-            self, _cmd, zipPath, toPath, currentDirectory, password, outMessage);
-    return result;
+    NSArray *result = FSExtractZip(zipPath, toPath, currentDirectory, password,
+                                   outMessage);
+    return FSValidatedArchiveResult(result, outMessage);
 }
 
-static void FSInstallArchiveUnzipFix(void)
+static const char *FSSkipObjCTypeQualifiers(const char *type)
 {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        Class zipper = NSClassFromString(@"Zipper");
-        if (!zipper) {
-            NSLog(@"[ArchiveUnzipFix] Zipper class unavailable");
-            return;
-        }
-
-        SEL plainSelector = NSSelectorFromString(
-            @"unZipFile:toPath:currentDirectory:outMessage:");
-        Method plain = class_getInstanceMethod(zipper, plainSelector);
-        if (plain && method_getImplementation(plain) != (IMP)FSHookUnzip) {
-            gPreviousUnzip = method_getImplementation(plain);
-            method_setImplementation(plain, (IMP)FSHookUnzip);
-        }
-
-        SEL passwordSelector = NSSelectorFromString(
-            @"unZipFile:toPath:currentDirectory:withPassword:outMessage:");
-        Method protectedMethod = class_getInstanceMethod(zipper, passwordSelector);
-        if (protectedMethod &&
-            method_getImplementation(protectedMethod) != (IMP)FSHookUnzipWithPassword) {
-            gPreviousUnzipWithPassword = method_getImplementation(protectedMethod);
-            method_setImplementation(protectedMethod, (IMP)FSHookUnzipWithPassword);
-        }
-        NSLog(@"[ArchiveUnzipFix] installed Zipper in-process extraction hooks");
-    });
+    while (type && *type && strchr("rnNoORV", *type)) type++;
+    return type;
 }
 
-__attribute__((constructor)) static void FSArchiveUnzipBootstrap(void)
+static BOOL FSObjCTypeIsObject(const char *type)
 {
-    // Tweak.m installs its original hooks in another constructor. Scheduling on
-    // the main queue guarantees this override runs after all image constructors.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        FSInstallArchiveUnzipFix();
-    });
-    [NSNotificationCenter.defaultCenter
-        addObserverForName:UIApplicationDidFinishLaunchingNotification
-                    object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
-        FSInstallArchiveUnzipFix();
-    }];
+    type = FSSkipObjCTypeQualifiers(type);
+    return type && type[0] == '@';
+}
+
+static BOOL FSObjCTypeIsObjectPointer(const char *type)
+{
+    type = FSSkipObjCTypeQualifiers(type);
+    if (!type || type[0] != '^') return NO;
+    return FSObjCTypeIsObject(type + 1);
+}
+
+static BOOL FSMethodHasExpectedUnzipSignature(Method method,
+                                              unsigned int argumentCount)
+{
+    if (!method || method_getNumberOfArguments(method) != argumentCount)
+        return NO;
+
+    char returnType[128] = {0};
+    method_getReturnType(method, returnType, sizeof(returnType));
+    if (!FSObjCTypeIsObject(returnType)) return NO;
+
+    char argumentType[128] = {0};
+    method_getArgumentType(method, 0, argumentType, sizeof(argumentType));
+    if (!FSObjCTypeIsObject(argumentType)) return NO;
+    memset(argumentType, 0, sizeof(argumentType));
+    method_getArgumentType(method, 1, argumentType, sizeof(argumentType));
+    if (FSSkipObjCTypeQualifiers(argumentType)[0] != ':') return NO;
+
+    for (unsigned int index = 2; index + 1 < argumentCount; index++) {
+        memset(argumentType, 0, sizeof(argumentType));
+        method_getArgumentType(method, index, argumentType,
+                               sizeof(argumentType));
+        if (!FSObjCTypeIsObject(argumentType)) return NO;
+    }
+    memset(argumentType, 0, sizeof(argumentType));
+    method_getArgumentType(method, argumentCount - 1, argumentType,
+                           sizeof(argumentType));
+    return FSObjCTypeIsObjectPointer(argumentType);
+}
+
+void FSInstallArchiveUnzipFix(void)
+{
+    Class zipper = NSClassFromString(@"Zipper");
+    if (!zipper) {
+        NSLog(@"[ArchiveUnzipFix] Zipper class unavailable");
+        return;
+    }
+
+    SEL plainSelector = NSSelectorFromString(
+        @"unZipFile:toPath:currentDirectory:outMessage:");
+    SEL passwordSelector = NSSelectorFromString(
+        @"unZipFile:toPath:currentDirectory:withPassword:outMessage:");
+    Method plain = class_getInstanceMethod(zipper, plainSelector);
+    Method protectedMethod = class_getInstanceMethod(zipper, passwordSelector);
+
+    if (FSMethodHasExpectedUnzipSignature(plain, 6)) {
+        static dispatch_once_t plainOnceToken;
+        dispatch_once(&plainOnceToken, ^{
+            if (method_getImplementation(plain) != (IMP)FSHookUnzip)
+                method_setImplementation(plain, (IMP)FSHookUnzip);
+            NSLog(@"[ArchiveUnzipFix] installed plain Zipper extraction hook");
+        });
+    } else {
+        NSLog(@"[ArchiveUnzipFix] incompatible plain Zipper method: %s",
+              plain ? method_getTypeEncoding(plain) : "<missing>");
+    }
+
+    if (FSMethodHasExpectedUnzipSignature(protectedMethod, 7)) {
+        static dispatch_once_t protectedOnceToken;
+        dispatch_once(&protectedOnceToken, ^{
+            if (method_getImplementation(protectedMethod) !=
+                (IMP)FSHookUnzipWithPassword) {
+                method_setImplementation(protectedMethod,
+                                         (IMP)FSHookUnzipWithPassword);
+            }
+            NSLog(@"[ArchiveUnzipFix] installed password Zipper extraction hook");
+        });
+    } else {
+        NSLog(@"[ArchiveUnzipFix] incompatible password Zipper method: %s",
+              protectedMethod ? method_getTypeEncoding(protectedMethod)
+                              : "<missing>");
+    }
 }
