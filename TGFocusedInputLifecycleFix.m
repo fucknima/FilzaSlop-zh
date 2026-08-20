@@ -85,8 +85,6 @@ static void FSMsgSendVoid2(id target, SEL selector, id arg1, id arg2) {
 
     UIView *overlay = [[UIView alloc] initWithFrame:CGRectZero];
     overlay.translatesAutoresizingMaskIntoConstraints = NO;
-    // Match Filza's faded full-screen focus treatment without depending on its
-    // legacy TGFocusedInput geometry.
     overlay.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.90];
     self.overlay = overlay;
     [root addSubview:overlay];
@@ -103,8 +101,6 @@ static void FSMsgSendVoid2(id target, SEL selector, id arg1, id arg2) {
     self.bar = bar;
     [overlay addSubview:bar];
 
-    // This is the core of the fix. No keyboard notifications, cached heights,
-    // transforms, or first-responder timing assumptions are involved.
     UIKeyboardLayoutGuide *keyboardGuide = root.keyboardLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [bar.leadingAnchor constraintEqualToAnchor:overlay.leadingAnchor],
@@ -191,13 +187,8 @@ static void FSMsgSendVoid2(id target, SEL selector, id arg1, id arg2) {
 
     [self updateDoneState];
     [root layoutIfNeeded];
-
-    // Become first responder only after the bar has a keyboard-guide
-    // constraint. Therefore the very first keyboard animation carries the bar
-    // to its final position; there is no covered intermediate frame.
     [field becomeFirstResponder];
 
-    // Filza selects the basename but leaves the extension untouched for files.
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.dismissed || !self.textField.isFirstResponder) return;
         NSString *text = self.textField.text ?: @"";
@@ -242,8 +233,6 @@ static void FSMsgSendVoid2(id target, SEL selector, id arg1, id arg2) {
     NSString *name = self.textField.text ?: @"";
     if (!self.doneButton.enabled || name.length == 0) return;
 
-    // Keep the original RenameView instance as the protocol sender so Filza's
-    // controller receives exactly the same delegate shape it expects.
     FSMsgSendVoid2(self.delegate,
         NSSelectorFromString(@"renameView:completeWithName:"), self.renameView, name);
     [self dismiss];
@@ -277,8 +266,6 @@ static void FSMsgSendVoid2(id target, SEL selector, id arg1, id arg2) {
 
 static void hook_Rename_showModern(id self, SEL _cmd, id vc, id delegate, BOOL isDirectory) {
     if (![vc isKindOfClass:UIViewController.class] || !delegate) {
-        // Unexpected Filza build: preserve the original implementation rather
-        // than breaking rename completely.
         if (gOrigRenameShow)
             ((void(*)(id, SEL, id, id, BOOL))gOrigRenameShow)(self, _cmd, vc, delegate, isDirectory);
         return;
@@ -311,8 +298,6 @@ static void InstallModernRenameFix(void) {
 
 __attribute__((constructor))
 static void RenameKeyboardFixInit(void) {
-    // Tweak.m also hooks RenameView. Install on the next main-loop turn so this
-    // layer is last and deliberately replaces only the presentation path.
     dispatch_async(dispatch_get_main_queue(), ^{
         InstallModernRenameFix();
     });
