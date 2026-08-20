@@ -6,6 +6,7 @@
 #import <notify.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <stdatomic.h>
 #import <stdio.h>
 #import <stdlib.h>
 #import <string.h>
@@ -32,10 +33,46 @@ static NSString *const kMCMDeletedGeneratedPathsKey =
     @"FilzaSlopDeletedGeneratedPaths";
 static NSMutableDictionary<NSString *, MCMLease *> *gLeases;
 static BOOL gUnrestrictedFilesystem;
+static _Atomic(int) gMCMStartupComplete = 0;
+
+NSNotificationName const MCMFilzaStartupProgressNotification =
+    @"FilzaSlop.MCMStartupProgress";
+NSNotificationName const MCMFilzaStartupCompleteNotification =
+    @"FilzaSlop.MCMStartupComplete";
+NSString *const MCMFilzaStartupProgressKey = @"progress";
+NSString *const MCMFilzaStartupStatusKey = @"status";
 
 typedef CFTypeRef SecTaskRef;
 extern SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator);
 extern CFStringRef SecTaskCopySigningIdentifier(SecTaskRef task, CFErrorRef *error);
+
+static void MCMPostStartupProgress(double progress, NSString *status)
+{
+    progress = MAX(0.0, MIN(1.0, progress));
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:MCMFilzaStartupProgressNotification
+                      object:nil
+                    userInfo:@{
+                        MCMFilzaStartupProgressKey: @(progress),
+                        MCMFilzaStartupStatusKey: status ?: @"正在准备设备存储…",
+                    }];
+}
+
+static void MCMFinishStartup(NSString *status)
+{
+    atomic_store_explicit(&gMCMStartupComplete, 1, memory_order_release);
+    NSString *finalStatus = status.length ? status : @"设备存储已就绪";
+    MCMPostStartupProgress(1.0, finalStatus);
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:MCMFilzaStartupCompleteNotification
+                      object:nil
+                    userInfo:@{MCMFilzaStartupStatusKey: finalStatus}];
+}
+
+BOOL MCMFilzaStartupIsComplete(void)
+{
+    return atomic_load_explicit(&gMCMStartupComplete, memory_order_acquire) != 0;
+}
 
 static NSString *MCMSignedCodeIdentifier(void)
 {
@@ -1555,201 +1592,309 @@ static void MCMPruneEmptyGeneratedDirectory(NSString *directory)
         NSLog(@"[MCMFilza] removed empty category path=%@", directory);
 }
 
+static void MCMPrepareStartupRoot(void)
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *root = MCMFilzaVirtualRoot();
+    if (!root.length) return;
+
+    if (MCMFilzaIsRunningInLiveContainer()) {
+        [fm createDirectoryAtPath:root withIntermediateDirectories:YES
+                      attributes:@{NSFilePosixPermissions: @0700} error:nil];
+        return;
+    }
+
+    NSString *legacyRoot = [root.stringByDeletingLastPathComponent
+        stringByAppendingPathComponent:@"MCM Containers"];
+    if ([fm fileExistsAtPath:legacyRoot] && ![fm fileExistsAtPath:root])
+        [fm moveItemAtPath:legacyRoot toPath:root error:nil];
+    [fm createDirectoryAtPath:root withIntermediateDirectories:YES
+                   attributes:@{NSFilePosixPermissions: @0700} error:nil];
+    MCMMigrateLegacyTopLevelNames(fm, root);
+
+    for (NSString *name in @[
+        kMCMAppDataDirectoryName,
+        kMCMAppGroupsDirectoryName,
+        kMCMExtensionDataDirectoryName,
+        kMCMVPNDataDirectoryName,
+        kMCMServiceDataDirectoryName,
+        kMCMSystemDataDirectoryName,
+        kMCMSystemGroupsDirectoryName,
+        kMCMProtectedDataDirectoryName,
+        kMCMAdditionalLocationsDirectoryName,
+        kMCMExperimentalDirectoryName,
+        kMCMWallpaperLabDirectoryName,
+    ]) {
+        [fm createDirectoryAtPath:[root stringByAppendingPathComponent:name]
+      withIntermediateDirectories:YES
+                       attributes:@{NSFilePosixPermissions: @0700} error:nil];
+    }
+}
+
 void MCMFilzaStart(void)
 {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         MCMEnsureState();
-        if (MCMFilzaIsRunningInLiveContainer()) {
-            MCMInstallLiveContainerRoot();
-            return;
-        }
-        NSString *actual = MCMSignedCodeIdentifier();
-        if (![actual isEqualToString:kRequiredIdentifier]) {
-            NSLog(@"[MCMFilza] disabled: signed code identifier %@ must be %@ (bundle=%@)",
-                  actual, kRequiredIdentifier, NSBundle.mainBundle.bundleIdentifier);
-            return;
-        }
-        if (!MCMBridgeAvailable()) {
-            NSLog(@"[MCMFilza] disabled: ContainerManager symbols unavailable");
-            return;
-        }
-        NSFileManager *fm = NSFileManager.defaultManager;
-        NSString *root = MCMFilzaVirtualRoot();
-        NSString *legacyRoot = [root.stringByDeletingLastPathComponent
-            stringByAppendingPathComponent:@"MCM Containers"];
-        if ([fm fileExistsAtPath:legacyRoot] && ![fm fileExistsAtPath:root])
-            [fm moveItemAtPath:legacyRoot toPath:root error:nil];
-        else if ([fm fileExistsAtPath:legacyRoot])
-            [fm removeItemAtPath:legacyRoot error:nil];
-        MCMMigrateLegacyTopLevelNames(fm, root);
-        NSString *apps = [root stringByAppendingPathComponent:kMCMAppDataDirectoryName];
-        NSString *groups = [root stringByAppendingPathComponent:kMCMAppGroupsDirectoryName];
-        NSString *extensions = [root
-            stringByAppendingPathComponent:kMCMExtensionDataDirectoryName];
-        NSString *vpnData = [root stringByAppendingPathComponent:kMCMVPNDataDirectoryName];
-        NSString *serviceData = [root
-            stringByAppendingPathComponent:kMCMServiceDataDirectoryName];
-        NSString *systemData = [root
-            stringByAppendingPathComponent:kMCMSystemDataDirectoryName];
-        NSString *systemGroups = [root
-            stringByAppendingPathComponent:kMCMSystemGroupsDirectoryName];
-        NSString *protectedData = [root
-            stringByAppendingPathComponent:kMCMProtectedDataDirectoryName];
-        NSString *additionalLocations = [root
-            stringByAppendingPathComponent:kMCMAdditionalLocationsDirectoryName];
-        NSString *experimental = [root
-            stringByAppendingPathComponent:kMCMExperimentalDirectoryName];
-        NSString *filesTraversal = [root stringByAppendingPathComponent:@"Files Traversal"];
-        [fm removeItemAtPath:filesTraversal error:nil];
-        for (NSString *directory in @[root, apps, groups, extensions, vpnData,
-                                      serviceData, systemData, systemGroups,
-                                      protectedData, additionalLocations,
-                                      experimental])
-            [fm createDirectoryAtPath:directory withIntermediateDirectories:YES
-                           attributes:@{NSFilePosixPermissions: @0700} error:nil];
-        MCMInstallArchiveAlias(fm, root);
-        MCMResetAppLinksForTesting(apps);
+        MCMPrepareStartupRoot();
+        MCMPostStartupProgress(0.03, @"正在初始化设备存储…");
 
-        NSMutableOrderedSet *appIdentifiers = [NSMutableOrderedSet orderedSetWithArray:
-            MCMDynamicIdentifiers(2)];
-        [appIdentifiers addObjectsFromArray:MCMInstalledApplicationIdentifiers()];
-        NSArray<NSString *> *launchServicesIdentifiers =
-            MCMLaunchServicesStoreIdentifiers();
-        // Keep the proven targets as a compatibility fallback when metadata
-        // enumeration is denied or incomplete on a particular build.
-        [appIdentifiers addObjectsFromArray:MCMResearchTargetIdentifiers()];
-        NSDictionary *custom = MCMCustomIdentifiers();
-        for (id value in [custom[@"AppData"] isKindOfClass:NSArray.class] ? custom[@"AppData"] : @[])
-            if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value)) [appIdentifiers addObject:value];
-        for (NSString *identifier in appIdentifiers)
-            MCMInstallLink(apps, identifier, 2, NO);
-        for (NSString *identifier in launchServicesIdentifiers)
-            if (![appIdentifiers containsObject:identifier])
-                MCMInstallLinkWithFailureLogging(apps, identifier, 2, NO, NO);
-        MCMLogExpectedIdentifierCoverage(@"App Data links",
-            [NSSet setWithArray:[fm contentsOfDirectoryAtPath:apps error:nil] ?: @[]]);
-        NSMutableOrderedSet *groupIdentifiers = [NSMutableOrderedSet orderedSetWithArray:
-            MCMDynamicIdentifiers(7)];
-        [groupIdentifiers addObjectsFromArray:@[
-            @"group.com.apple.notes",
-            @"group.com.apple.safari",
-            @"group.com.apple.weather",
-            @"group.com.apple.stocks",
-        ]];
-        for (id value in [custom[@"AppGroups"] isKindOfClass:NSArray.class] ? custom[@"AppGroups"] : @[])
-            if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
-                [groupIdentifiers addObject:value];
-        for (NSString *identifier in groupIdentifiers)
-            MCMInstallLink(groups, identifier, 7, YES);
-        NSMutableOrderedSet *extensionIdentifiers = [NSMutableOrderedSet orderedSetWithArray:
-            MCMDynamicIdentifiers(4)];
-        for (id value in [custom[@"ExtensionData"] isKindOfClass:NSArray.class] ? custom[@"ExtensionData"] : @[])
-            if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
-                [extensionIdentifiers addObject:value];
-        for (NSString *identifier in extensionIdentifiers)
-            MCMInstallLink(extensions, identifier, 4, NO);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            @autoreleasepool {
+                if (MCMFilzaIsRunningInLiveContainer()) {
+                    MCMPostStartupProgress(0.35, @"正在准备 LiveContainer 存储…");
+                    MCMInstallLiveContainerRoot();
+                    MCMFinishStartup(@"设备存储已就绪");
+                    return;
+                }
 
-        MCMInstallDirectFilesystemLinks(apps,
-            @"/private/var/mobile/Containers/Data/Application");
-        MCMInstallDirectFilesystemLinks(groups,
-            @"/private/var/mobile/Containers/Shared/AppGroup");
-        MCMInstallDirectFilesystemLinks(extensions,
-            @"/private/var/mobile/Containers/Data/PluginKitPlugin");
+                MCMPostStartupProgress(0.06, @"正在检查容器访问…");
+                NSString *actual = MCMSignedCodeIdentifier();
+                if (![actual isEqualToString:kRequiredIdentifier]) {
+                    NSLog(@"[MCMFilza] disabled: signed code identifier %@ must be %@ (bundle=%@)",
+                          actual, kRequiredIdentifier, NSBundle.mainBundle.bundleIdentifier);
+                    MCMFinishStartup(@"设备存储不可用");
+                    return;
+                }
+                if (!MCMBridgeAvailable()) {
+                    NSLog(@"[MCMFilza] disabled: ContainerManager symbols unavailable");
+                    MCMFinishStartup(@"ContainerManager 不可用");
+                    return;
+                }
 
-        NSArray<NSDictionary *> *additionalCategories = @[
-            @{@"Directory": vpnData, @"Class": @6, @"Group": @(NO),
-              @"CustomKey": @"VPNData", @"Fallback": @[]},
-            @{@"Directory": serviceData, @"Class": @10, @"Group": @(NO),
-              @"CustomKey": @"ServiceData", @"Fallback": @[
-                  @"com.apple.swcd", @"com.apple.familycircled",
-                  @"com.apple.locationd", @"com.apple.installd",
-                  @"com.apple.accountsd", @"com.apple.itunescloudd",
-                  @"com.apple.nanonewscd"]},
-            @{@"Directory": systemData, @"Class": @12, @"Group": @(NO),
-              @"CustomKey": @"SystemData", @"Fallback": @[
-                  @"com.apple.eligibilityd", @"com.apple.geod",
-                  @"com.apple.springboard"]},
-            @{@"Directory": systemGroups, @"Class": @13, @"Group": @(YES),
-              @"CustomKey": @"SystemGroups", @"Fallback": @[
-                  @"systemgroup.com.apple.configurationprofiles",
-                  @"systemgroup.com.apple.pisco.suinfo",
-                  @"systemgroup.com.apple.lsd.iconscache",
-                  @"systemgroup.com.apple.icloud.findmydevice.managed",
-                  @"systemgroup.com.apple.ondemandresources",
-                  @"systemgroup.com.apple.mobilegestaltcache",
-                  @"systemgroup.com.apple.nsurlstoragedresources",
-                  @"systemgroup.com.apple.installcoordinationd",
-                  @"systemgroup.com.apple.osanalytics",
-                  @"systemgroup.com.apple.ContainerManagerTest.fixed"]},
-            @{@"Directory": protectedData, @"Class": @15, @"Group": @(NO),
-              @"CustomKey": @"ProtectedData", @"Fallback": @[
-                  @"com.apple.appmanagedfeaturesd"]},
-        ];
-        for (NSDictionary *category in additionalCategories) {
-            uint64_t containerClass = [category[@"Class"] unsignedLongLongValue];
-            NSMutableOrderedSet<NSString *> *identifiers =
-                [NSMutableOrderedSet orderedSetWithArray:
-                    MCMDynamicIdentifiers(containerClass)];
-            [identifiers addObjectsFromArray:category[@"Fallback"]];
-            NSString *customKey = category[@"CustomKey"];
-            for (id value in [custom[customKey] isKindOfClass:NSArray.class]
-                    ? custom[customKey] : @[])
-                if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
-                    [identifiers addObject:value];
-            for (NSString *identifier in identifiers)
-                MCMInstallLink(category[@"Directory"], identifier, containerClass,
-                               [category[@"Group"] boolValue]);
-        }
+                NSFileManager *fm = NSFileManager.defaultManager;
+                NSString *root = MCMFilzaVirtualRoot();
+                NSString *legacyRoot = [root.stringByDeletingLastPathComponent
+                    stringByAppendingPathComponent:@"MCM Containers"];
+                if ([fm fileExistsAtPath:legacyRoot] && ![fm fileExistsAtPath:root])
+                    [fm moveItemAtPath:legacyRoot toPath:root error:nil];
+                else if ([fm fileExistsAtPath:legacyRoot])
+                    [fm removeItemAtPath:legacyRoot error:nil];
+                MCMMigrateLegacyTopLevelNames(fm, root);
+                NSString *apps = [root stringByAppendingPathComponent:kMCMAppDataDirectoryName];
+                NSString *groups = [root stringByAppendingPathComponent:kMCMAppGroupsDirectoryName];
+                NSString *extensions = [root
+                    stringByAppendingPathComponent:kMCMExtensionDataDirectoryName];
+                NSString *vpnData = [root stringByAppendingPathComponent:kMCMVPNDataDirectoryName];
+                NSString *serviceData = [root
+                    stringByAppendingPathComponent:kMCMServiceDataDirectoryName];
+                NSString *systemData = [root
+                    stringByAppendingPathComponent:kMCMSystemDataDirectoryName];
+                NSString *systemGroups = [root
+                    stringByAppendingPathComponent:kMCMSystemGroupsDirectoryName];
+                NSString *protectedData = [root
+                    stringByAppendingPathComponent:kMCMProtectedDataDirectoryName];
+                NSString *additionalLocations = [root
+                    stringByAppendingPathComponent:kMCMAdditionalLocationsDirectoryName];
+                NSString *experimental = [root
+                    stringByAppendingPathComponent:kMCMExperimentalDirectoryName];
+                NSString *filesTraversal = [root stringByAppendingPathComponent:@"Files Traversal"];
+                [fm removeItemAtPath:filesTraversal error:nil];
+                for (NSString *directory in @[root, apps, groups, extensions, vpnData,
+                                              serviceData, systemData, systemGroups,
+                                              protectedData, additionalLocations,
+                                              experimental])
+                    [fm createDirectoryAtPath:directory withIntermediateDirectories:YES
+                                   attributes:@{NSFilePosixPermissions: @0700} error:nil];
+                MCMInstallArchiveAlias(fm, root);
+                MCMResetAppLinksForTesting(apps);
 
-        MCMInstallDirectFilesystemLinks(vpnData,
-            @"/private/var/mobile/Containers/Data/VPNPlugin");
-        MCMInstallDirectFilesystemLinks(serviceData,
-            @"/private/var/mobile/Containers/Data/InternalDaemon");
-        MCMInstallDirectFilesystemLinks(systemData,
-            @"/private/var/mobile/Containers/Data/System");
-        MCMInstallDirectFilesystemLinks(systemGroups,
-            @"/private/var/mobile/Containers/Shared/SystemGroup");
-        MCMInstallDirectFilesystemLinks(protectedData,
-            @"/private/var/mobile/Containers/Data/Protected");
+                MCMPostStartupProgress(0.10, @"正在读取已安装应用…");
+                NSMutableOrderedSet *appIdentifiers = [NSMutableOrderedSet orderedSetWithArray:
+                    MCMDynamicIdentifiers(2)];
+                [appIdentifiers addObjectsFromArray:MCMInstalledApplicationIdentifiers()];
 
-        // These part-domain lookups remain inside their server-selected system
-        // group. They expose proven sibling directories but do not grant an
-        // arbitrary path outside the managed group root.
-        NSArray<NSArray<NSString *> *> *additionalLocationMigrations = @[
-            @[@"Install Coordination", @"[MHA-C13] Install Coordination"],
-            @[@"Configuration Profiles", @"[MHA-C13] Configuration Profiles"],
-            @[@"MobileGestalt Cache", @"[MHA-C13] MobileGestalt Cache"],
-        ];
-        for (NSArray<NSString *> *migration in additionalLocationMigrations)
-            MCMMigrateStorageEntry(fm, additionalLocations,
-                                   migration[0], migration[1]);
+                MCMPostStartupProgress(0.16, @"正在扫描 LaunchServices…");
+                NSArray<NSString *> *launchServicesIdentifiers =
+                    MCMLaunchServicesStoreIdentifiers();
+                MCMPostStartupProgress(0.40, @"正在建立应用数据访问…");
 
-        MCMInstallScopedLink(additionalLocations,
-            @"[MHA-C13] Install Coordination", 13,
-            @"systemgroup.com.apple.installcoordinationd", YES, 3,
-            @"../InstallCoordination");
-        // Use the group root here. A part-3 ConfigurationProfiles lookup can
-        // run the ContainerManager directory finalizer on the resolved path.
-        MCMInstallScopedLink(additionalLocations,
-            @"[MHA-C13] Configuration Profiles", 13,
-            @"systemgroup.com.apple.configurationprofiles", YES, 0, nil);
-        MCMInstallScopedLink(additionalLocations,
-            @"[MHA-C13] MobileGestalt Cache", 13,
-            @"systemgroup.com.apple.mobilegestaltcache", YES, 3, nil);
-        MCMInstallExperimentalFolder(experimental);
-        if (!gUnrestrictedFilesystem) {
-            for (NSString *directory in @[apps, groups, extensions, vpnData,
-                                          serviceData, systemData, systemGroups,
-                                          protectedData, additionalLocations])
-                MCMPruneEmptyGeneratedDirectory(directory);
-        }
-        MCMWriteAccessMap(fm, root);
-        MCMWriteInstructions();
-        MCMRunGeneratedDeletionProbe(fm, root);
-        NSError *listError = nil;
-        NSArray *visibleEntries = [fm contentsOfDirectoryAtPath:root error:&listError];
-        NSLog(@"[MCMFilza] ready root=%@ active_leases=%lu entries=%@ list_error=%@", root,
-              (unsigned long)gLeases.count, visibleEntries, listError);
+                // Keep the proven targets as a compatibility fallback when metadata
+                // enumeration is denied or incomplete on a particular build.
+                [appIdentifiers addObjectsFromArray:MCMResearchTargetIdentifiers()];
+                NSDictionary *custom = MCMCustomIdentifiers();
+                for (id value in [custom[@"AppData"] isKindOfClass:NSArray.class] ? custom[@"AppData"] : @[])
+                    if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value)) [appIdentifiers addObject:value];
+
+                NSUInteger appTotal = MAX((NSUInteger)1,
+                    appIdentifiers.count + launchServicesIdentifiers.count);
+                NSUInteger appDone = 0;
+                for (NSString *identifier in appIdentifiers) {
+                    MCMInstallLink(apps, identifier, 2, NO);
+                    appDone++;
+                    if ((appDone & 7U) == 0 || appDone == appTotal)
+                        MCMPostStartupProgress(0.40 + 0.20 * ((double)appDone / appTotal),
+                                               @"正在建立应用数据访问…");
+                }
+                for (NSString *identifier in launchServicesIdentifiers) {
+                    if (![appIdentifiers containsObject:identifier])
+                        MCMInstallLinkWithFailureLogging(apps, identifier, 2, NO, NO);
+                    appDone++;
+                    if ((appDone & 7U) == 0 || appDone == appTotal)
+                        MCMPostStartupProgress(0.40 + 0.20 * ((double)appDone / appTotal),
+                                               @"正在建立应用数据访问…");
+                }
+                MCMLogExpectedIdentifierCoverage(@"App Data links",
+                    [NSSet setWithArray:[fm contentsOfDirectoryAtPath:apps error:nil] ?: @[]]);
+
+                MCMPostStartupProgress(0.61, @"正在建立应用组访问…");
+                NSMutableOrderedSet *groupIdentifiers = [NSMutableOrderedSet orderedSetWithArray:
+                    MCMDynamicIdentifiers(7)];
+                [groupIdentifiers addObjectsFromArray:@[
+                    @"group.com.apple.notes",
+                    @"group.com.apple.safari",
+                    @"group.com.apple.weather",
+                    @"group.com.apple.stocks",
+                ]];
+                for (id value in [custom[@"AppGroups"] isKindOfClass:NSArray.class] ? custom[@"AppGroups"] : @[])
+                    if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
+                        [groupIdentifiers addObject:value];
+                NSUInteger groupTotal = MAX((NSUInteger)1, groupIdentifiers.count);
+                NSUInteger groupDone = 0;
+                for (NSString *identifier in groupIdentifiers) {
+                    MCMInstallLink(groups, identifier, 7, YES);
+                    groupDone++;
+                    if ((groupDone & 7U) == 0 || groupDone == groupTotal)
+                        MCMPostStartupProgress(0.61 + 0.08 * ((double)groupDone / groupTotal),
+                                               @"正在建立应用组访问…");
+                }
+
+                MCMPostStartupProgress(0.70, @"正在建立扩展数据访问…");
+                NSMutableOrderedSet *extensionIdentifiers = [NSMutableOrderedSet orderedSetWithArray:
+                    MCMDynamicIdentifiers(4)];
+                for (id value in [custom[@"ExtensionData"] isKindOfClass:NSArray.class] ? custom[@"ExtensionData"] : @[])
+                    if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
+                        [extensionIdentifiers addObject:value];
+                NSUInteger extensionTotal = MAX((NSUInteger)1, extensionIdentifiers.count);
+                NSUInteger extensionDone = 0;
+                for (NSString *identifier in extensionIdentifiers) {
+                    MCMInstallLink(extensions, identifier, 4, NO);
+                    extensionDone++;
+                    if ((extensionDone & 7U) == 0 || extensionDone == extensionTotal)
+                        MCMPostStartupProgress(0.70 + 0.06 * ((double)extensionDone / extensionTotal),
+                                               @"正在建立扩展数据访问…");
+                }
+
+                MCMInstallDirectFilesystemLinks(apps,
+                    @"/private/var/mobile/Containers/Data/Application");
+                MCMInstallDirectFilesystemLinks(groups,
+                    @"/private/var/mobile/Containers/Shared/AppGroup");
+                MCMInstallDirectFilesystemLinks(extensions,
+                    @"/private/var/mobile/Containers/Data/PluginKitPlugin");
+
+                NSArray<NSDictionary *> *additionalCategories = @[
+                    @{@"Directory": vpnData, @"Class": @6, @"Group": @(NO),
+                      @"CustomKey": @"VPNData", @"Fallback": @[],
+                      @"Status": @"正在建立 VPN 数据访问…"},
+                    @{@"Directory": serviceData, @"Class": @10, @"Group": @(NO),
+                      @"CustomKey": @"ServiceData", @"Fallback": @[
+                          @"com.apple.swcd", @"com.apple.familycircled",
+                          @"com.apple.locationd", @"com.apple.installd",
+                          @"com.apple.accountsd", @"com.apple.itunescloudd",
+                          @"com.apple.nanonewscd"],
+                      @"Status": @"正在建立服务数据访问…"},
+                    @{@"Directory": systemData, @"Class": @12, @"Group": @(NO),
+                      @"CustomKey": @"SystemData", @"Fallback": @[
+                          @"com.apple.eligibilityd", @"com.apple.geod",
+                          @"com.apple.springboard"],
+                      @"Status": @"正在建立系统数据访问…"},
+                    @{@"Directory": systemGroups, @"Class": @13, @"Group": @(YES),
+                      @"CustomKey": @"SystemGroups", @"Fallback": @[
+                          @"systemgroup.com.apple.configurationprofiles",
+                          @"systemgroup.com.apple.pisco.suinfo",
+                          @"systemgroup.com.apple.lsd.iconscache",
+                          @"systemgroup.com.apple.icloud.findmydevice.managed",
+                          @"systemgroup.com.apple.ondemandresources",
+                          @"systemgroup.com.apple.mobilegestaltcache",
+                          @"systemgroup.com.apple.nsurlstoragedresources",
+                          @"systemgroup.com.apple.installcoordinationd",
+                          @"systemgroup.com.apple.osanalytics",
+                          @"systemgroup.com.apple.ContainerManagerTest.fixed"],
+                      @"Status": @"正在建立系统组访问…"},
+                    @{@"Directory": protectedData, @"Class": @15, @"Group": @(NO),
+                      @"CustomKey": @"ProtectedData", @"Fallback": @[
+                          @"com.apple.appmanagedfeaturesd"],
+                      @"Status": @"正在建立受保护数据访问…"},
+                ];
+                NSUInteger categoryIndex = 0;
+                for (NSDictionary *category in additionalCategories) {
+                    NSString *categoryStatus = category[@"Status"];
+                    double categoryStart = 0.77 + 0.025 * categoryIndex;
+                    MCMPostStartupProgress(categoryStart, categoryStatus);
+                    uint64_t containerClass = [category[@"Class"] unsignedLongLongValue];
+                    NSMutableOrderedSet<NSString *> *identifiers =
+                        [NSMutableOrderedSet orderedSetWithArray:
+                            MCMDynamicIdentifiers(containerClass)];
+                    [identifiers addObjectsFromArray:category[@"Fallback"]];
+                    NSString *customKey = category[@"CustomKey"];
+                    for (id value in [custom[customKey] isKindOfClass:NSArray.class]
+                            ? custom[customKey] : @[])
+                        if ([value isKindOfClass:NSString.class] && MCMSafeIdentifier(value))
+                            [identifiers addObject:value];
+                    for (NSString *identifier in identifiers)
+                        MCMInstallLink(category[@"Directory"], identifier, containerClass,
+                                       [category[@"Group"] boolValue]);
+                    categoryIndex++;
+                }
+
+                MCMInstallDirectFilesystemLinks(vpnData,
+                    @"/private/var/mobile/Containers/Data/VPNPlugin");
+                MCMInstallDirectFilesystemLinks(serviceData,
+                    @"/private/var/mobile/Containers/Data/InternalDaemon");
+                MCMInstallDirectFilesystemLinks(systemData,
+                    @"/private/var/mobile/Containers/Data/System");
+                MCMInstallDirectFilesystemLinks(systemGroups,
+                    @"/private/var/mobile/Containers/Shared/SystemGroup");
+                MCMInstallDirectFilesystemLinks(protectedData,
+                    @"/private/var/mobile/Containers/Data/Protected");
+
+                MCMPostStartupProgress(0.90, @"正在准备其他位置…");
+                // These part-domain lookups remain inside their server-selected system
+                // group. They expose proven sibling directories but do not grant an
+                // arbitrary path outside the managed group root.
+                NSArray<NSArray<NSString *> *> *additionalLocationMigrations = @[
+                    @[@"Install Coordination", @"[MHA-C13] Install Coordination"],
+                    @[@"Configuration Profiles", @"[MHA-C13] Configuration Profiles"],
+                    @[@"MobileGestalt Cache", @"[MHA-C13] MobileGestalt Cache"],
+                ];
+                for (NSArray<NSString *> *migration in additionalLocationMigrations)
+                    MCMMigrateStorageEntry(fm, additionalLocations,
+                                           migration[0], migration[1]);
+
+                MCMInstallScopedLink(additionalLocations,
+                    @"[MHA-C13] Install Coordination", 13,
+                    @"systemgroup.com.apple.installcoordinationd", YES, 3,
+                    @"../InstallCoordination");
+                // Use the group root here. A part-3 ConfigurationProfiles lookup can
+                // run the ContainerManager directory finalizer on the resolved path.
+                MCMInstallScopedLink(additionalLocations,
+                    @"[MHA-C13] Configuration Profiles", 13,
+                    @"systemgroup.com.apple.configurationprofiles", YES, 0, nil);
+                MCMInstallScopedLink(additionalLocations,
+                    @"[MHA-C13] MobileGestalt Cache", 13,
+                    @"systemgroup.com.apple.mobilegestaltcache", YES, 3, nil);
+
+                MCMPostStartupProgress(0.94, @"正在检查实验性位置…");
+                MCMInstallExperimentalFolder(experimental);
+
+                MCMPostStartupProgress(0.97, @"正在整理设备存储…");
+                if (!gUnrestrictedFilesystem) {
+                    for (NSString *directory in @[apps, groups, extensions, vpnData,
+                                                  serviceData, systemData, systemGroups,
+                                                  protectedData, additionalLocations])
+                        MCMPruneEmptyGeneratedDirectory(directory);
+                }
+
+                MCMPostStartupProgress(0.985, @"正在生成访问映射…");
+                MCMWriteAccessMap(fm, root);
+                MCMWriteInstructions();
+                MCMRunGeneratedDeletionProbe(fm, root);
+                NSError *listError = nil;
+                NSArray *visibleEntries = [fm contentsOfDirectoryAtPath:root error:&listError];
+                NSLog(@"[MCMFilza] ready root=%@ active_leases=%lu entries=%@ list_error=%@", root,
+                      (unsigned long)gLeases.count, visibleEntries, listError);
+                MCMFinishStartup(@"设备存储已就绪");
+            }
+        });
     });
 }
