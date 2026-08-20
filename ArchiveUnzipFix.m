@@ -4,7 +4,6 @@
 
 #import "ArchiveUnzipFix.h"
 
-#include <crt_externs.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -12,14 +11,15 @@
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
 #include <stdio.h>
-#include <spawn.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
+#include <wchar.h>
+
+#include "Vendor/unrar/include/unrar.h"
 
 #if __has_include(<ptrauth.h>)
 #include <ptrauth.h>
@@ -85,11 +85,6 @@ static NSDictionary<NSString *, NSNumber *> *FSMainExecutableLocalSymbols(void)
         }
 
         NSSet<NSString *> *wanted = [NSSet setWithArray:@[
-            @"_zipOpen64",
-            @"_zipOpenNewFileInZip64",
-            @"_zipWriteInFileInZip",
-            @"_zipCloseFileInZip",
-            @"_zipClose",
             @"_unzOpen64",
             @"_unzGoToFirstFile",
             @"_unzGoToNextFile",
@@ -137,7 +132,7 @@ static void *FSSignFunctionPointerIfNeeded(void *pointer)
     return pointer;
 }
 
-void *FSResolveMainExecutableLocalSymbol(const char *bareName)
+static void *FSResolveMainExecutableLocalSymbol(const char *bareName)
 {
     if (!bareName || !bareName[0]) return NULL;
     NSString *symbolName = [@"_" stringByAppendingString:
@@ -738,157 +733,208 @@ static BOOL FSCommitStagedExtraction(
     return YES;
 }
 
-#pragma mark - RAR/RAR5 extraction through Filza's installed archive tool
+#pragma mark - Self-contained RAR/RAR5 extraction
 
-typedef NS_ENUM(NSUInteger, FSRarToolKind) {
-    FSRarToolNone,
-    FSRarToolUnrar,
-    FSRarTool7Zip,
-    FSRarToolUnar,
-};
+typedef struct {
+    int descriptor;
+    int writeError;
+} FSRarWriteContext;
 
-static BOOL FSPathIsExecutableFile(NSString *path)
+static int CALLBACK FSRarStreamCallback(UINT message, LPARAM userData,
+                                        LPARAM parameter1, LPARAM parameter2)
 {
-    struct stat status = {0};
-    return path.length && stat(path.fileSystemRepresentation, &status) == 0 &&
-        S_ISREG(status.st_mode) && access(path.fileSystemRepresentation, X_OK) == 0;
+    if (message != UCM_PROCESSDATA) return 0;
+    FSRarWriteContext *context = (FSRarWriteContext *)(intptr_t)userData;
+    if (!context || context->descriptor < 0 || parameter2 < 0) return -1;
+
+    const uint8_t *bytes = (const uint8_t *)(intptr_t)parameter1;
+    size_t remaining = (size_t)parameter2;
+    while (remaining > 0) {
+        ssize_t written = write(context->descriptor, bytes, remaining);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) {
+            context->writeError = written < 0 ? errno : EIO;
+            return -1;
+        }
+        bytes += written;
+        remaining -= (size_t)written;
+    }
+    return 0;
 }
 
-static FSRarToolKind FSFindRarTool(NSString **outPath)
+static NSString *FSRarHeaderName(const struct RARHeaderDataEx *header)
 {
-    static NSString *toolPath;
-    static FSRarToolKind toolKind = FSRarToolNone;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSArray<NSDictionary *> *candidates = @[
-            @{@"kind": @(FSRarToolUnrar), @"path": @"/usr/bin/unrar"},
-            @{@"kind": @(FSRarToolUnrar), @"path": @"/bin/unrar"},
-            @{@"kind": @(FSRarToolUnrar), @"path": @"/var/jb/usr/bin/unrar"},
-            @{@"kind": @(FSRarToolUnrar), @"path": @"/opt/procursus/bin/unrar"},
-            @{@"kind": @(FSRarToolUnrar), @"path": @"/bootstrap/usr/bin/unrar"},
-            @{@"kind": @(FSRarTool7Zip), @"path": @"/usr/bin/7z"},
-            @{@"kind": @(FSRarTool7Zip), @"path": @"/var/jb/usr/bin/7z"},
-            @{@"kind": @(FSRarTool7Zip), @"path": @"/opt/procursus/bin/7z"},
-            @{@"kind": @(FSRarTool7Zip), @"path": @"/bootstrap/usr/bin/7z"},
-            @{@"kind": @(FSRarToolUnar), @"path": @"/usr/bin/unar"},
-            @{@"kind": @(FSRarToolUnar), @"path": @"/var/jb/usr/bin/unar"},
-            @{@"kind": @(FSRarToolUnar), @"path": @"/opt/procursus/bin/unar"},
-        ];
-        for (NSDictionary *candidate in candidates) {
-            NSString *path = candidate[@"path"];
-            if (!FSPathIsExecutableFile(path)) continue;
-            toolPath = path;
-            toolKind = [candidate[@"kind"] unsignedIntegerValue];
+    if (!header) return nil;
+    if (header->FileNameW[0] != 0) {
+        size_t length = 0;
+        while (length < sizeof(header->FileNameW) / sizeof(wchar_t) &&
+               header->FileNameW[length] != 0) length++;
+        if (length > 0) {
+            NSStringEncoding encoding = sizeof(wchar_t) == 4
+                ? NSUTF32LittleEndianStringEncoding
+                : NSUTF16LittleEndianStringEncoding;
+            NSString *name = [[NSString alloc] initWithBytes:header->FileNameW
+                length:length * sizeof(wchar_t) encoding:encoding];
+            if (name.length) return name;
+        }
+    }
+    return header->FileName[0] ? [NSString stringWithUTF8String:header->FileName]
+                               : nil;
+}
+
+static NSString *FSRarFailureDescription(int code, BOOL hasPassword)
+{
+    if (code == ERAR_BAD_PASSWORD || code == ERAR_MISSING_PASSWORD)
+        return hasPassword ? @"RAR 密码不正确" : @"RAR 需要密码";
+    if (code == ERAR_BAD_ARCHIVE || code == ERAR_UNKNOWN_FORMAT)
+        return @"RAR 文件格式无效或已损坏";
+    if (code == ERAR_BAD_DATA) return @"RAR 数据或校验失败";
+    return [NSString stringWithFormat:@"RAR 解压失败（代码 %d）", code];
+}
+
+static BOOL FSExtractRarEntries(NSString *archivePath,
+                                NSString *stagingDirectory,
+                                NSString *password,
+                                NSMutableOrderedSet<NSString *> *topLevelNames,
+                                NSUInteger *outExtracted,
+                                NSString **outMessage)
+{
+    struct RAROpenArchiveDataEx openData = {0};
+    openData.ArcName = (char *)archivePath.fileSystemRepresentation;
+    openData.OpenMode = RAR_OM_EXTRACT;
+    HANDLE archive = RAROpenArchiveEx(&openData);
+    if (!archive || openData.OpenResult != ERAR_SUCCESS) {
+        int code = openData.OpenResult ?: ERAR_EOPEN;
+        FSSetArchiveMessage(outMessage, @"%@",
+            FSRarFailureDescription(code, password.length > 0));
+        if (archive) RARCloseArchive(archive);
+        return NO;
+    }
+
+    char passwordBuffer[2048] = {0};
+    if (password.length) {
+        if (![password getCString:passwordBuffer maxLength:sizeof(passwordBuffer)
+                         encoding:NSUTF8StringEncoding]) {
+            RARCloseArchive(archive);
+            FSSetArchiveMessage(outMessage, @"RAR 密码无法转换为 UTF-8");
+            return NO;
+        }
+        RARSetPassword(archive, passwordBuffer);
+    }
+
+    NSFileManager *manager = NSFileManager.defaultManager;
+    NSUInteger extracted = 0;
+    BOOL success = YES;
+    int result = ERAR_SUCCESS;
+    for (;;) {
+        struct RARHeaderDataEx header = {0};
+        result = RARReadHeaderEx(archive, &header);
+        if (result == ERAR_END_ARCHIVE) break;
+        if (result != ERAR_SUCCESS) {
+            FSSetArchiveMessage(outMessage, @"%@",
+                FSRarFailureDescription(result, password.length > 0));
+            success = NO;
             break;
         }
 
-        if (!toolPath) {
-            NSSet<NSString *> *unrarNames = [NSSet setWithArray:@[
-                @"unrar", @"unrar64"]];
-            NSSet<NSString *> *sevenZipNames = [NSSet setWithArray:@[
-                @"7z", @"7zz", @"7za"]];
-            NSSet<NSString *> *unarNames = [NSSet setWithObject:@"unar"];
-            NSString *bundlePath = NSBundle.mainBundle.bundlePath;
-            NSDirectoryEnumerator<NSString *> *enumerator =
-                [NSFileManager.defaultManager enumeratorAtPath:bundlePath];
-            for (NSString *relative in enumerator) {
-                NSString *name = relative.lastPathComponent.lowercaseString;
-                FSRarToolKind kind = FSRarToolNone;
-                if ([unrarNames containsObject:name]) kind = FSRarToolUnrar;
-                else if ([sevenZipNames containsObject:name]) kind = FSRarTool7Zip;
-                else if ([unarNames containsObject:name]) kind = FSRarToolUnar;
-                if (kind == FSRarToolNone) continue;
-                NSString *path = [bundlePath stringByAppendingPathComponent:relative];
-                if (!FSPathIsExecutableFile(path)) continue;
-                toolPath = path;
-                toolKind = kind;
+        NSString *rawName = FSRarHeaderName(&header);
+        NSString *relative = FSSafeRelativeZipPath(rawName);
+        if (!relative.length || header.RedirType != 0) {
+            FSSetArchiveMessage(outMessage,
+                header.RedirType != 0 ? @"RAR 包含链接条目，已拒绝：%@"
+                                      : @"RAR 包含不安全路径：%@",
+                rawName ?: @"<unknown>");
+            success = NO;
+            break;
+        }
+        [topLevelNames addObject:[relative componentsSeparatedByString:@"/"].firstObject];
+
+        NSString *outputPath =
+            [stagingDirectory stringByAppendingPathComponent:relative];
+        BOOL directory = (header.Flags & RHDF_DIRECTORY) != 0;
+        if (directory) {
+            NSError *directoryError = nil;
+            if (![manager createDirectoryAtPath:outputPath
+                     withIntermediateDirectories:YES attributes:nil
+                                           error:&directoryError]) {
+                FSSetArchiveMessage(outMessage, @"创建 RAR 目录失败：%@",
+                                    directoryError.localizedDescription);
+                success = NO;
                 break;
             }
+            result = RARProcessFileW(archive, RAR_SKIP, NULL, NULL);
+            if (result != ERAR_SUCCESS) {
+                FSSetArchiveMessage(outMessage, @"%@",
+                    FSRarFailureDescription(result, password.length > 0));
+                success = NO;
+                break;
+            }
+            extracted++;
+            continue;
         }
-        NSLog(@"[ArchiveUnzipFix] RAR tool kind=%lu path=%@",
-              (unsigned long)toolKind, toolPath);
-    });
-    if (outPath) *outPath = toolPath;
-    return toolKind;
-}
 
-static BOOL FSRunRarTool(FSRarToolKind kind, NSString *toolPath,
-                         NSString *archivePath, NSString *stagingDirectory,
-                         NSString *password, NSString **outMessage)
-{
-    NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithObject:toolPath];
-    if (kind == FSRarToolUnrar) {
-        [arguments addObjectsFromArray:@[
-            @"x", @"-idq", @"-o+", @"-ol-", @"-y"]];
-        [arguments addObject:password.length
-            ? [@"-p" stringByAppendingString:password] : @"-p-"];
-        [arguments addObject:archivePath];
-        [arguments addObject:[stagingDirectory stringByAppendingString:@"/"]];
-    } else if (kind == FSRarTool7Zip) {
-        [arguments addObjectsFromArray:@[@"x", @"-y", @"-aoa",
-            [@"-o" stringByAppendingString:stagingDirectory]]];
-        if (password.length)
-            [arguments addObject:[@"-p" stringByAppendingString:password]];
-        [arguments addObject:archivePath];
-    } else if (kind == FSRarToolUnar) {
-        [arguments addObjectsFromArray:@[@"-q", @"-f", @"-o", stagingDirectory]];
-        if (password.length)
-            [arguments addObjectsFromArray:@[@"-p", password]];
-        [arguments addObject:archivePath];
-    } else {
-        FSSetArchiveMessage(outMessage, @"未找到可用的 RAR 解压后端");
-        return NO;
+        NSError *parentError = nil;
+        if (![manager createDirectoryAtPath:outputPath.stringByDeletingLastPathComponent
+                 withIntermediateDirectories:YES attributes:nil
+                                       error:&parentError]) {
+            FSSetArchiveMessage(outMessage, @"创建 RAR 父目录失败：%@",
+                                parentError.localizedDescription);
+            success = NO;
+            break;
+        }
+        NSString *temporaryPath = [outputPath.stringByDeletingLastPathComponent
+            stringByAppendingPathComponent:[NSString stringWithFormat:
+                @".filza-rar-%@.tmp", NSUUID.UUID.UUIDString]];
+        int descriptor = open(temporaryPath.fileSystemRepresentation,
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (descriptor < 0) {
+            FSSetArchiveMessage(outMessage, @"无法创建 RAR 临时文件：%@（%s）",
+                                temporaryPath, strerror(errno));
+            success = NO;
+            break;
+        }
+
+        FSRarWriteContext context = {.descriptor = descriptor, .writeError = 0};
+        RARSetCallback(archive, FSRarStreamCallback, (LPARAM)(intptr_t)&context);
+        result = RARProcessFileW(archive, RAR_TEST, NULL, NULL);
+        RARSetCallback(archive, NULL, 0);
+        BOOL fileSuccess = result == ERAR_SUCCESS && context.writeError == 0;
+        if (fileSuccess && fchmod(descriptor, 0644) != 0) {
+            context.writeError = errno;
+            fileSuccess = NO;
+        }
+        if (fileSuccess && fsync(descriptor) != 0) {
+            context.writeError = errno;
+            fileSuccess = NO;
+        }
+        if (close(descriptor) != 0 && fileSuccess) {
+            context.writeError = errno;
+            fileSuccess = NO;
+        }
+        context.descriptor = -1;
+        if (fileSuccess && rename(temporaryPath.fileSystemRepresentation,
+                                  outputPath.fileSystemRepresentation) != 0) {
+            context.writeError = errno;
+            fileSuccess = NO;
+        }
+        if (!fileSuccess) {
+            unlink(temporaryPath.fileSystemRepresentation);
+            if (context.writeError) {
+                FSSetArchiveMessage(outMessage, @"写入 RAR 文件失败：%@（%s）",
+                                    relative, strerror(context.writeError));
+            } else {
+                FSSetArchiveMessage(outMessage, @"%@",
+                    FSRarFailureDescription(result, password.length > 0));
+            }
+            success = NO;
+            break;
+        }
+        extracted++;
     }
 
-    char **argv = calloc(arguments.count + 1, sizeof(char *));
-    if (!argv) {
-        FSSetArchiveMessage(outMessage, @"无法分配 RAR 解压参数");
-        return NO;
-    }
-    for (NSUInteger index = 0; index < arguments.count; index++)
-        argv[index] = (char *)arguments[index].fileSystemRepresentation;
-
-    posix_spawn_file_actions_t actions;
-    int actionsResult = posix_spawn_file_actions_init(&actions);
-    BOOL actionsInitialized = actionsResult == 0;
-    if (actionsResult == 0)
-        actionsResult = posix_spawn_file_actions_addopen(&actions,
-            STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-    if (actionsResult == 0)
-        actionsResult = posix_spawn_file_actions_addopen(&actions,
-            STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
-    if (actionsResult == 0)
-        actionsResult = posix_spawn_file_actions_addopen(&actions,
-            STDERR_FILENO, "/dev/null", O_WRONLY, 0);
-
-    pid_t process = 0;
-    int spawnResult = actionsResult ?: posix_spawn(&process,
-        toolPath.fileSystemRepresentation, &actions, NULL, argv,
-        *_NSGetEnviron());
-    if (actionsInitialized) posix_spawn_file_actions_destroy(&actions);
-    free(argv);
-    if (spawnResult != 0) {
-        FSSetArchiveMessage(outMessage, @"无法启动 RAR 解压工具：%s",
-                            strerror(spawnResult));
-        return NO;
-    }
-
-    int status = 0;
-    while (waitpid(process, &status, 0) < 0) {
-        if (errno == EINTR) continue;
-        FSSetArchiveMessage(outMessage, @"等待 RAR 解压工具失败：%s",
-                            strerror(errno));
-        return NO;
-    }
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        FSSetArchiveMessage(outMessage,
-            password.length ? @"RAR 解压失败（代码 %d，密码可能不正确）"
-                            : @"RAR 解压失败（代码 %d，可能需要密码）",
-            code);
-        return NO;
-    }
-    return YES;
+    RARCloseArchive(archive);
+    if (outExtracted) *outExtracted = extracted;
+    return success;
 }
 
 static NSArray *FSExtractRar(id archiveArgument, id destinationArgument,
@@ -901,14 +947,6 @@ static NSArray *FSExtractRar(id archiveArgument, id destinationArgument,
         FSArchivePathFromArgument(currentDirectoryArgument);
     if (!archivePath.length || !destination.length) {
         FSSetArchiveMessage(outMessage, @"RAR 路径或解压目标无效");
-        return nil;
-    }
-
-    NSString *toolPath = nil;
-    FSRarToolKind toolKind = FSFindRarTool(&toolPath);
-    if (toolKind == FSRarToolNone || !toolPath.length) {
-        FSSetArchiveMessage(outMessage,
-            @"设备中未找到 unrar、7z 或 unar，无法解压 RAR");
         return nil;
     }
 
@@ -928,12 +966,12 @@ static NSArray *FSExtractRar(id archiveArgument, id destinationArgument,
 
     NSString *password = [passwordArgument isKindOfClass:NSString.class]
         ? passwordArgument : nil;
-    BOOL success = FSRunRarTool(toolKind, toolPath, archivePath,
-                                stagingDirectory, password, outMessage);
-    NSArray<NSString *> *topLevelNames = success
-        ? [NSFileManager.defaultManager contentsOfDirectoryAtPath:
-            stagingDirectory error:nil] : nil;
-    if (success && topLevelNames.count == 0) {
+    NSMutableOrderedSet<NSString *> *topLevelNames =
+        [NSMutableOrderedSet orderedSet];
+    NSUInteger extracted = 0;
+    BOOL success = FSExtractRarEntries(archivePath, stagingDirectory, password,
+                                       topLevelNames, &extracted, outMessage);
+    if (success && extracted == 0) {
         FSSetArchiveMessage(outMessage, @"RAR 中没有可解压的项目");
         success = NO;
     }
@@ -953,10 +991,9 @@ static NSArray *FSExtractRar(id archiveArgument, id destinationArgument,
         FSCleanupCreatedDirectories(createdDirectories);
         return nil;
     }
-    FSSetArchiveMessage(outMessage, @"完成（%lu 项）",
-                        (unsigned long)topLevelNames.count);
+    FSSetArchiveMessage(outMessage, @"完成（%lu 项）", (unsigned long)extracted);
     return FSArchiveResultForDestination(destination,
-        currentDirectory ?: destination, topLevelNames);
+        currentDirectory ?: destination, topLevelNames.array);
 }
 
 static BOOL FSArchivePathIsRar(NSString *path)
@@ -1175,6 +1212,23 @@ static NSArray *FSHookUnzipWithPassword(id self, SEL _cmd, id zipPath, id toPath
     return FSValidatedArchiveResult(result, outMessage);
 }
 
+static NSArray *FSHookUnrar(id self, SEL _cmd, id rarPath, id toPath,
+                            id currentDirectory, NSString **outMessage)
+{
+    NSArray *result = FSExtractRar(rarPath, toPath, currentDirectory, nil,
+                                   outMessage);
+    return FSValidatedArchiveResult(result, outMessage);
+}
+
+static NSArray *FSHookUnrarWithPassword(id self, SEL _cmd, id rarPath, id toPath,
+                                        id currentDirectory, id password,
+                                        NSString **outMessage)
+{
+    NSArray *result = FSExtractRar(rarPath, toPath, currentDirectory, password,
+                                   outMessage);
+    return FSValidatedArchiveResult(result, outMessage);
+}
+
 static const char *FSSkipObjCTypeQualifiers(const char *type)
 {
     while (type && *type && strchr("rnNoORV", *type)) type++;
@@ -1235,8 +1289,14 @@ void FSInstallArchiveUnzipFix(void)
         @"unZipFile:toPath:currentDirectory:outMessage:");
     SEL passwordSelector = NSSelectorFromString(
         @"unZipFile:toPath:currentDirectory:withPassword:outMessage:");
+    SEL rarSelector = NSSelectorFromString(
+        @"unRarFile:toPath:currentDirectory:outMessage:");
+    SEL rarPasswordSelector = NSSelectorFromString(
+        @"unRarFile:toPath:currentDirectory:withPassword:outMessage:");
     Method plain = class_getInstanceMethod(zipper, plainSelector);
     Method protectedMethod = class_getInstanceMethod(zipper, passwordSelector);
+    Method rar = class_getInstanceMethod(zipper, rarSelector);
+    Method protectedRar = class_getInstanceMethod(zipper, rarPasswordSelector);
 
     if (FSMethodHasExpectedUnzipSignature(plain, 6)) {
         static dispatch_once_t plainOnceToken;
@@ -1264,5 +1324,33 @@ void FSInstallArchiveUnzipFix(void)
         NSLog(@"[ArchiveUnzipFix] incompatible password Zipper method: %s",
               protectedMethod ? method_getTypeEncoding(protectedMethod)
                               : "<missing>");
+    }
+
+    if (FSMethodHasExpectedUnzipSignature(rar, 6)) {
+        static dispatch_once_t rarOnceToken;
+        dispatch_once(&rarOnceToken, ^{
+            if (method_getImplementation(rar) != (IMP)FSHookUnrar)
+                method_setImplementation(rar, (IMP)FSHookUnrar);
+            NSLog(@"[ArchiveUnzipFix] installed plain RAR extraction hook");
+        });
+    } else {
+        NSLog(@"[ArchiveUnzipFix] incompatible plain RAR method: %s",
+              rar ? method_getTypeEncoding(rar) : "<missing>");
+    }
+
+    if (FSMethodHasExpectedUnzipSignature(protectedRar, 7)) {
+        static dispatch_once_t protectedRarOnceToken;
+        dispatch_once(&protectedRarOnceToken, ^{
+            if (method_getImplementation(protectedRar) !=
+                (IMP)FSHookUnrarWithPassword) {
+                method_setImplementation(protectedRar,
+                                         (IMP)FSHookUnrarWithPassword);
+            }
+            NSLog(@"[ArchiveUnzipFix] installed password RAR extraction hook");
+        });
+    } else {
+        NSLog(@"[ArchiveUnzipFix] incompatible password RAR method: %s",
+              protectedRar ? method_getTypeEncoding(protectedRar)
+                           : "<missing>");
     }
 }

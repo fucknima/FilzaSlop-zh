@@ -17,6 +17,7 @@
 #include "MCMFilzaIntegration.h"
 #include "PosterBoardFeature.h"
 #include "ArchiveUnzipFix.h"
+#include "Vendor/minizip/FSMinizipZip.h"
 
 #pragma mark - Root Helper Hooks
 
@@ -166,38 +167,7 @@ static void hook_sendObjectWithReplyAsync(id self, SEL _cmd, id msg, id queue, i
     if (completion) { void (^block)(id) = completion; block(nil); }
 }
 
-#pragma mark - Zip creation via minizip C API (linked in Filza binary)
-
-#include <dlfcn.h>
-typedef void *FSZipFile;
-static FSZipFile (*pFSZipOpen64)(const char *, int);
-static int (*pFSZipOpenNewFileInZip64)(FSZipFile, const char *, const void *,
-    const void *, unsigned, const void *, unsigned, const char *, int, int, int);
-static int (*pFSZipWriteInFileInZip)(FSZipFile, const void *, unsigned);
-static int (*pFSZipCloseFileInZip)(FSZipFile);
-static int (*pFSZipClose)(FSZipFile, const char *);
-
-static BOOL FSLoadZipMinizip(void) {
-    static BOOL available = NO;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-#define FS_ZIP_SYMBOL(name) (dlsym(RTLD_DEFAULT, name) ?: \
-    FSResolveMainExecutableLocalSymbol(name))
-        pFSZipOpen64 = FS_ZIP_SYMBOL("zipOpen64");
-        pFSZipOpenNewFileInZip64 =
-            FS_ZIP_SYMBOL("zipOpenNewFileInZip64");
-        pFSZipWriteInFileInZip = FS_ZIP_SYMBOL("zipWriteInFileInZip");
-        pFSZipCloseFileInZip = FS_ZIP_SYMBOL("zipCloseFileInZip");
-        pFSZipClose = FS_ZIP_SYMBOL("zipClose");
-#undef FS_ZIP_SYMBOL
-        available = pFSZipOpen64 && pFSZipOpenNewFileInZip64 &&
-            pFSZipWriteInFileInZip && pFSZipCloseFileInZip && pFSZipClose;
-        NSLog(@"[ZipCreateFix] in-process zip available=%d", available);
-    });
-    return available;
-}
-
-static IMP orig_ZipFiles = NULL;
+#pragma mark - Self-contained Zip creation
 
 static NSString *FSZipPathFromArgument(id value) {
     if ([value isKindOfClass:NSString.class]) return value;
@@ -223,7 +193,7 @@ static NSString *FSSafeZipEntryPath(NSString *path) {
     return parts.count ? [parts componentsJoinedByString:@"/"] : nil;
 }
 
-static BOOL FSAddPathToZip(FSZipFile archive, NSString *sourcePath,
+static BOOL FSAddPathToZip(FSMinizipFile archive, NSString *sourcePath,
                            NSString *entryPath, NSSet<NSString *> *excludedPaths) {
     NSString *standardSource = sourcePath.stringByStandardizingPath;
     if ([excludedPaths containsObject:standardSource]) return YES;
@@ -245,9 +215,9 @@ static BOOL FSAddPathToZip(FSZipFile archive, NSString *sourcePath,
 
     if (S_ISDIR(status.st_mode)) {
         NSString *directoryEntry = [safeEntry stringByAppendingString:@"/"];
-        int openResult = pFSZipOpenNewFileInZip64(archive,
+        int openResult = FSMinizipOpenNewFile64(archive,
             directoryEntry.UTF8String, NULL, NULL, 0, NULL, 0, NULL, 0, 0, 0);
-        if (openResult != 0 || pFSZipCloseFileInZip(archive) != 0) {
+        if (openResult != 0 || FSMinizipCloseFile(archive) != 0) {
             NSLog(@"[ZipCreateFix] cannot add directory %@ code=%d",
                   sourcePath, openResult);
             return NO;
@@ -279,7 +249,7 @@ static BOOL FSAddPathToZip(FSZipFile archive, NSString *sourcePath,
         NSLog(@"[ZipCreateFix] cannot open %@: %s", sourcePath, strerror(errno));
         return NO;
     }
-    int openResult = pFSZipOpenNewFileInZip64(archive, safeEntry.UTF8String,
+    int openResult = FSMinizipOpenNewFile64(archive, safeEntry.UTF8String,
         NULL, NULL, 0, NULL, 0, NULL, 8, -1,
         (uint64_t)status.st_size >= UINT32_MAX);
     if (openResult != 0) {
@@ -294,8 +264,8 @@ static BOOL FSAddPathToZip(FSZipFile archive, NSString *sourcePath,
         ssize_t count = read(descriptor, buffer, sizeof(buffer));
         if (count == 0) break;
         if (count < 0 && errno == EINTR) continue;
-        if (count < 0 || pFSZipWriteInFileInZip(archive, buffer,
-                                                (unsigned)count) != 0) {
+        if (count < 0 || FSMinizipWrite(archive, buffer,
+                                       (unsigned)count) != 0) {
             NSLog(@"[ZipCreateFix] cannot stream %@: %s", sourcePath,
                   count < 0 ? strerror(errno) : "minizip write failed");
             success = NO;
@@ -303,7 +273,7 @@ static BOOL FSAddPathToZip(FSZipFile archive, NSString *sourcePath,
         }
     }
     if (close(descriptor) != 0) success = NO;
-    if (pFSZipCloseFileInZip(archive) != 0) success = NO;
+    if (FSMinizipCloseFile(archive) != 0) success = NO;
     return success;
 }
 
@@ -319,12 +289,8 @@ static id FSZipFileItemAtPath(NSString *path) {
 // Hook: -[Zipper ZipFiles:toFilePath:currentDirectory:]
 static id hook_ZipFiles(id self, SEL _cmd, id files, id toFilePath, id currentDirectory) {
     NSString *temporaryPath = nil;
-    FSZipFile archive = NULL;
+    FSMinizipFile archive = NULL;
     @try {
-        if (!FSLoadZipMinizip())
-            return orig_ZipFiles
-                ? ((id(*)(id, SEL, id, id, id))orig_ZipFiles)(
-                    self, _cmd, files, toFilePath, currentDirectory) : nil;
         NSString *targetPath = FSZipPathFromArgument(toFilePath);
         if (!targetPath && [toFilePath isKindOfClass:NSString.class])
             targetPath = toFilePath;
@@ -337,7 +303,7 @@ static id hook_ZipFiles(id self, SEL _cmd, id files, id toFilePath, id currentDi
         temporaryPath = [targetPath.stringByDeletingLastPathComponent
             stringByAppendingPathComponent:[NSString stringWithFormat:
                 @".filza-zip-%@.tmp", NSUUID.UUID.UUIDString]];
-        archive = pFSZipOpen64(temporaryPath.fileSystemRepresentation, 0);
+        archive = FSMinizipOpen64(temporaryPath.fileSystemRepresentation, 0);
         if (!archive) {
             NSLog(@"[ZipCreateFix] cannot create temporary archive %@",
                   temporaryPath);
@@ -362,7 +328,7 @@ static id hook_ZipFiles(id self, SEL _cmd, id files, id toFilePath, id currentDi
                 break;
             }
         }
-        int closeResult = pFSZipClose(archive, NULL);
+        int closeResult = FSMinizipClose(archive, NULL);
         archive = NULL;
         if (!success || closeResult != 0) {
             unlink(temporaryPath.fileSystemRepresentation);
@@ -379,7 +345,7 @@ static id hook_ZipFiles(id self, SEL _cmd, id files, id toFilePath, id currentDi
         return FSZipFileItemAtPath(targetPath);
     } @catch (NSException *exception) {
         NSLog(@"[ZipCreateFix] exception: %@", exception);
-        if (archive) pFSZipClose(archive, NULL);
+        if (archive) FSMinizipClose(archive, NULL);
         if (temporaryPath) unlink(temporaryPath.fileSystemRepresentation);
         return nil;
     }
@@ -1493,7 +1459,7 @@ static void installHooks(void) {
     if (zipper) {
         Method m = class_getInstanceMethod(zipper,
             NSSelectorFromString(@"ZipFiles:toFilePath:currentDirectory:"));
-        if (m) { orig_ZipFiles = method_getImplementation(m); method_setImplementation(m, (IMP)hook_ZipFiles); }
+        if (m) method_setImplementation(m, (IMP)hook_ZipFiles);
     }
     FSInstallArchiveUnzipFix();
 
