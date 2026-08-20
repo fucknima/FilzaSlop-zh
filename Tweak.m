@@ -1326,47 +1326,66 @@ static void TF_adjustInput(UIView *input, CGFloat kbHeight, NSTimeInterval durat
         Class tgfCls = NSClassFromString(@"TGFocusedInput");
         if (!tgfCls || ![input isKindOfClass:tgfCls]) return;
         UIView *main = nil;
+        UITextField *hidden = nil;
         @try { main = [input valueForKey:@"mainInputView"]; } @catch (__unused NSException *e) {}
+        @try { hidden = [input valueForKey:@"hiddenTextField"]; } @catch (__unused NSException *e) {}
+        // Primary: use inputAccessoryView – native, always above keyboard, no manual math
+        if ([hidden isKindOfClass:UITextField.class] && [main isKindOfClass:UIView.class]) {
+            if (hidden.inputAccessoryView != main) {
+                // Ensure correct size before becoming accessory
+                if (main.bounds.size.width < 10 || main.bounds.size.height < 10) {
+                    CGRect f = main.frame;
+                    if (f.size.width < 10) f.size.width = input.window.bounds.size.width;
+                    if (f.size.height < 10) f.size.height = 56;
+                    f.origin = CGPointZero;
+                    main.frame = f;
+                }
+                hidden.inputAccessoryView = main;
+                // Force keyboard to reload accessory
+                if (hidden.isFirstResponder) [hidden reloadInputViews];
+                else {
+                    // Will be picked up when hidden becomes firstResponder
+                    NSLog(@"[KeyboardFix] set accessory (deferred reload) %p", main);
+                }
+                NSLog(@"[KeyboardFix] set accessory main=%p hidden=%p", main, hidden);
+            }
+            if (hidden.inputAccessoryView == main) {
+                // Accessory handles Y, just ensure no leftover transform
+                if (!CGAffineTransformIsIdentity(main.transform)) {
+                    main.transform = CGAffineTransformIdentity;
+                }
+                // If keyboard is visible, accessory is already above it – nothing else
+                if (kbHeight > 0) return;
+            }
+        }
+        // Fallback: manual transform if accessory not available or hidden is nil
         if (![main isKindOfClass:UIView.class] || !main.superview) return;
-        UIView *container = main.superview;
-        // Ensure layout is up to date so frame is valid
+        UIView *container = input; // TGFocusedInput is full-screen, use its bounds as container
+        CGFloat containerH = container.bounds.size.height;
+        if (containerH < 10) containerH = input.window.bounds.size.height;
+        if (containerH < 10) containerH = UIScreen.mainScreen.bounds.size.height;
         [container layoutIfNeeded];
-        static const void *kOrigYKey = (void *)"TFOrigY";
+        static const void *kOrigYKey = (void *)"TFOrigY2";
         NSNumber *stored = objc_getAssociatedObject(main, kOrigYKey);
         CGFloat origY;
-        if (stored) {
-            origY = stored.doubleValue;
-        } else {
-            // First time: save original Y when transform is identity
-            if (CGAffineTransformIsIdentity(main.transform)) {
-                origY = main.frame.origin.y;
-            } else {
-                // Already transformed, recover orig as current Y - translation
-                origY = main.frame.origin.y - main.transform.ty;
-            }
+        if (stored) origY = stored.doubleValue;
+        else {
+            origY = CGAffineTransformIsIdentity(main.transform) ? main.frame.origin.y : main.frame.origin.y - main.transform.ty;
             objc_setAssociatedObject(main, kOrigYKey, @(origY), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            NSLog(@"[KeyboardFix] saved origY=%.1f for %p", origY, main);
+            NSLog(@"[KeyboardFix] saved origY=%.1f for %p containerH=%.1f", origY, main, containerH);
         }
-        CGFloat containerH = container.bounds.size.height;
-        if (containerH < 10) containerH = input.bounds.size.height;
-        if (containerH < 10) containerH = input.window.bounds.size.height;
         CGFloat inputH = main.bounds.size.height;
         if (inputH < 10) inputH = 56;
         CGFloat targetY;
-        if (kbHeight > 0) {
-            // Place just above keyboard
-            targetY = containerH - inputH - kbHeight;
-            // Clamp so it doesn't go under island: keep at least 60pt from top
-            if (targetY < 60) targetY = 60;
-        } else {
-            targetY = origY;
-        }
+        if (kbHeight > 0) targetY = containerH - inputH - kbHeight;
+        else targetY = origY;
+        if (targetY < 44) targetY = 44; // keep below island (island is ~59pt high + status bar)
         CGFloat delta = targetY - origY;
         UIViewAnimationOptions opts = (UIViewAnimationOptions)((curve << 16) | UIViewAnimationOptionBeginFromCurrentState);
         [UIView animateWithDuration:duration delay:0 options:opts animations:^{
             main.transform = CGAffineTransformMakeTranslation(0, delta);
         } completion:nil];
-        NSLog(@"[KeyboardFix] adjust kb=%.1f origY=%.1f targetY=%.1f delta=%.1f containerH=%.1f", kbHeight, origY, targetY, delta, containerH);
+        NSLog(@"[KeyboardFix] fallback adjust kb=%.1f origY=%.1f targetY=%.1f delta=%.1f", kbHeight, origY, targetY, delta);
     } @catch (__unused NSException *e) {
         NSLog(@"[KeyboardFix] adjust exception %@", e);
     }
@@ -1411,38 +1430,57 @@ static void TF_handleKeyboard(NSNotification *note) {
         NSLog(@"[KeyboardFix] handle exception %@", e);
     }
 }
+static void TF_ensureAccessory(id self) {
+    @try {
+        UIView *main = nil; UITextField *hidden = nil;
+        @try { main = [self valueForKey:@"mainInputView"]; } @catch (__unused NSException *e) {}
+        @try { hidden = [self valueForKey:@"hiddenTextField"]; } @catch (__unused NSException *e) {}
+        if ([hidden isKindOfClass:UITextField.class] && [main isKindOfClass:UIView.class] && hidden.inputAccessoryView != main) {
+            if (main.bounds.size.width < 10 || main.bounds.size.height < 10) {
+                CGRect f = main.frame; if (f.size.width < 10) f.size.width = UIScreen.mainScreen.bounds.size.width; if (f.size.height < 10) f.size.height = 56; f.origin = CGPointZero; main.frame = f;
+            }
+            hidden.inputAccessoryView = main;
+            NSLog(@"[KeyboardFix] pre-set accessory %p", main);
+        }
+    } @catch (__unused NSException *e) {}
+}
 static IMP orig_TGFocused_showInVC = NULL;
 static IMP orig_Rename_showInVC = NULL;
 static IMP orig_NewFolder_showInVC = NULL;
 static IMP orig_TGFocused_didMoveToWindow = NULL;
 
 static void hook_TGFocused_showInVC(id self, SEL _cmd, id vc) {
+    TF_ensureAccessory(self);
     ((void(*)(id,SEL,id))orig_TGFocused_showInVC)(self, _cmd, vc);
+    // If accessory was set, it will appear with keyboard; still run fallback adjust in case
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        if (gTFKeyboardHeight > 0) TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+        TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        if (gTFKeyboardHeight > 0) TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+        TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
     });
 }
 static void hook_Rename_showInVC(id self, SEL _cmd, id vc, id delegate, BOOL isDir) {
+    TF_ensureAccessory(self);
     ((void(*)(id,SEL,id,id,BOOL))orig_Rename_showInVC)(self, _cmd, vc, delegate, isDir);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        if (gTFKeyboardHeight > 0) TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+        TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        if (gTFKeyboardHeight > 0) TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+        TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
     });
 }
 static void hook_NewFolder_showInVC(id self, SEL _cmd, id vc, id delegate) {
+    TF_ensureAccessory(self);
     ((void(*)(id,SEL,id,id))orig_NewFolder_showInVC)(self, _cmd, vc, delegate);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        if (gTFKeyboardHeight > 0) TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
+        TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
     });
 }
 static void hook_TGFocused_didMoveToWindow(id self, SEL _cmd) {
+    TF_ensureAccessory(self);
     ((void(*)(id,SEL))orig_TGFocused_didMoveToWindow)(self, _cmd);
-    if (gTFKeyboardHeight > 0 && ((UIView *)self).window) {
+    if (((UIView *)self).window) {
         dispatch_async(dispatch_get_main_queue(), ^{
             TF_adjustInput(self, gTFKeyboardHeight, gTFKeyboardDuration, gTFKeyboardCurve);
         });
