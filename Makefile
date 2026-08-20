@@ -33,7 +33,7 @@ FilzaApplySandboxExt_CFLAGS = -I$(PWD)/compat -I$(PWD) -I$(PWD)/XPF/src -I$(PWD)
 FilzaApplySandboxExt_CFLAGS += -Wno-arc-performSelector-leaks
 
 FilzaApplySandboxExt_CCFLAGS = $(FilzaApplySandboxExt_CFLAGS)
-FilzaApplySandboxExt_CCFLAGS += -std=c++11 -DRARDLL -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE
+FilzaApplySandboxExt_CCFLAGS += -std=c++11 -DRARDLL -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -Wno-error
 FilzaApplySandboxExt_OBJCFLAGS = $(FilzaApplySandboxExt_CFLAGS)
 FilzaApplySandboxExt_OBJCCFLAGS = $(FilzaApplySandboxExt_CFLAGS)
 
