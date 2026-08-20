@@ -13,6 +13,10 @@ FilzaJailedDS fork with:
 **The unsigned IPA is available on the
 [Releases page](https://github.com/0xjohnnydev/FilzaSlop/releases).**
 
+> Test branch note: `fix/rename-keyboard-lifecycle` replaces only Filza's legacy
+> RenameView presentation with an iOS keyboard-layout-guide based overlay so the
+> rename bar is positioned above the keyboard on the first presentation.
+
 ## Paths
 
 ### Container roots
