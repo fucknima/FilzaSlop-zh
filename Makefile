@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = FilzaApplySandboxExt
 
-FilzaApplySandboxExt_FILES = Tweak.m MCMBridge.m MCMFilzaIntegration.m PosterBoardFeature.m TGFocusedInputResponderTimingFix.m
+FilzaApplySandboxExt_FILES = Tweak.m MCMBridge.m MCMFilzaIntegration.m PosterBoardFeature.m TGFocusedInputResponderTimingFix.m StartupProgressController.m
 
 # --- Flags ---
 FilzaApplySandboxExt_CFLAGS = -I$(PWD)/compat -I$(PWD) -I$(PWD)/XPF/src -I$(PWD)/XPF/external/ChOma/include \
