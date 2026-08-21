@@ -25,7 +25,7 @@ FilzaApplySandboxExt_FILES = Tweak.m MCMBridge.m MCMFilzaIntegration.m \
     Vendor/minizip/FSMinizipZip.c $(UNRAR_SOURCES)
 
 # --- Flags ---
-FilzaApplySandboxExt_CFLAGS = -I$(PWD)/compat -I$(PWD) -I$(PWD)/XPF/src -I$(PWD)/XPF/external/ChOma/include \
+FilzaApplySandboxExt_CFLAGS = -I$(PWD) \
     -I$(PWD)/Vendor/unrar -I$(PWD)/Vendor/unrar/include -I$(PWD)/Vendor/minizip \
     -fobjc-arc \
     -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable \
