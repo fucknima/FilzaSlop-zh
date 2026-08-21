@@ -61,8 +61,10 @@ rename/mkdir/搜索/非 lease 复制删除在真机逐项验证(FEATURE_MATRIX �
 Makefile _FILES 增加 RootHelperBlocker.m。
 回归验证清单:终端入口消失;DEB 菜单消失;Archive 三件套不受影响;MCM 浏览/复制/删除正常;启动无 [RootHelperBlocker] missing 日志。
 
-### Phase 5 — Root-only UI pruning
-依 ROOT_ONLY_UI_MAP 处理方式列隐藏:Apps Manager 卸载/uicache/清数据按钮置灰或移除;属性页 chown/SetUID/SetGID 只读化;服务器开关隐藏。
+### Phase 5 — Root-only UI pruning ✅ 菜单层已实现(FeaturePruning.m,CI 通过)
+菜单过滤:identifier(terminal/uicache/makedeb/mountpoints/respring)+ 卸载标题关键词(en/zh),覆盖 TGPageViewController 基类与 TGApplicationsViewController 覆写的三个菜单数据源。
+待后续:设置页 WebDAV 服务器开关、属性页 Ownership 编辑入口的精确定位(需真机/深度逆向)。
+原计划::Apps Manager 卸载/uicache/清数据按钮置灰或移除;属性页 chown/SetUID/SetGID 只读化;服务器开关隐藏。
 实现优先用 capability 判定(FSFeatureRegistry),避免散落 if。
 回归:普通属性查看、Apps Manager 浏览不受影响。
 
