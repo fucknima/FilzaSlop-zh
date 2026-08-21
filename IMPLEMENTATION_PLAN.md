@@ -49,7 +49,7 @@ UI 与操作逻辑一律依据 capability,不依据 "Filza 原本有没有"。
 rename/mkdir/搜索/非 lease 复制删除在真机逐项验证(FEATURE_MATRIX ❓ 项),记录实际行为。
 验收:矩阵 Current Status 全部落定。
 
-### Phase 3 — Capability 抽象
+### Phase 3 — Capability 抽象 ✅ 已实现(Core/FSCapabilities,CI 通过)
 新增 Core/FSCapabilities(纯新增,零侵入);启动时探测并 NSLog 快照。
 提交粒度:①加文件 ②接 constructor ③文档。
 
