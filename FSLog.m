@@ -6,8 +6,8 @@ static NSString *logPath(void)
     static NSString *path;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        path = [NSHomeDirectory().stringByAppendingPathComponent:@"Documents"]
-            .stringByAppendingPathComponent:@"filzaslop.log"];
+        path = [[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]
+            stringByAppendingPathComponent:@"filzaslop.log"];
     });
     return path;
 }
