@@ -1251,6 +1251,23 @@ static void hook_copyFilesAndDirectoryFromPasteboard(id self, SEL _cmd) {
         return;
     }
 
+    // remote sources (SFTP/FTP/WebDAV/SMB downloads) must keep using Filza's
+    // native network pipeline; our POSIX copy only handles local files
+    BOOL sourcesAreLocal = YES;
+    for (id object in objects) {
+        if (![object isKindOfClass:NSDictionary.class]) continue;
+        NSString *source = localPathFromPasteboardValue(object[@"path"]);
+        struct stat fileInfo = {0};
+        if (!source.length || lstat(source.fileSystemRepresentation, &fileInfo) != 0) {
+            sourcesAreLocal = NO;
+            break;
+        }
+    }
+    if (!sourcesAreLocal) {
+        ((void(*)(id, SEL))orig_copyFilesAndDirectoryFromPasteboard)(self, _cmd);
+        return;
+    }
+
     UIViewController *controller = self;
     dispatch_async(pasteCopyQueue(), ^{
         NSMutableArray<NSError *> *errors = [NSMutableArray array];

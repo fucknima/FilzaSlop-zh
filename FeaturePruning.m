@@ -127,6 +127,82 @@ static void FPSwizzle(Class cls, const char *selName, IMP newImp, IMP *origOut)
     method_setImplementation(m, newImp);
 }
 
+#pragma mark - preferences.plist sanitation
+
+// Filza defaults point at /var/tmp and /var/mobile/Downloads — both unwritable
+// jailed, which breaks every download/preview/edit/remote-extract flow and
+// crashes CloudPageViewController when the nil result hits its completion array.
+static NSString *FPRedirectedDownloadDirectory(void)
+{
+    NSString *target = [[[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]
+        stringByAppendingPathComponent:@"Device Storage"]
+        stringByAppendingPathComponent:@"Downloads"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:target
+                              withIntermediateDirectories:YES attributes:nil error:nil];
+    return target;
+}
+
+static NSMutableDictionary *FPSanitizedPreferences(NSDictionary *prefs)
+{
+    NSMutableDictionary *sanitized = [prefs mutableCopy];
+    for (NSString *key in [prefs allKeys])
+        if ([key hasPrefix:@"air-"])   // WebDAV server group: LaunchDaemon-only, dead jailed
+            [sanitized removeObjectForKey:key];
+
+    void (^redirect)(NSString *, NSString *) = ^(NSString *key, NSString *value) {
+        NSDictionary *entry = sanitized[key];
+        if (![entry isKindOfClass:[NSDictionary class]]) return;
+        NSMutableDictionary *updated = [entry mutableCopy];
+        updated[@"selected-value"] = value;
+        sanitized[key] = updated;
+    };
+    redirect(@"temp-directory", NSTemporaryDirectory());
+    redirect(@"download-directory", FPRedirectedDownloadDirectory());
+    return sanitized;
+}
+
+static IMP origDictWithContentsOfFile;
+
+static id FP_dictWithContentsOfFile(id self, SEL _cmd, NSString *path)
+{
+    id result = ((id(*)(id, SEL, id))origDictWithContentsOfFile)(self, _cmd, path);
+    if ([path isKindOfClass:[NSString class]] && [path hasSuffix:@"preferences.plist"] &&
+        [result isKindOfClass:[NSDictionary class]]) {
+        FSLog(@"[FeaturePruning] preferences.plist sanitized (air-* removed, temp/download redirected)");
+        return FPSanitizedPreferences(result);
+    }
+    return result;
+}
+
+static IMP origDictInitWithContentsOfFile;
+
+static id FP_dictInitWithContentsOfFile(id self, SEL _cmd, NSString *path)
+{
+    id result = ((id(*)(id, SEL, id))origDictInitWithContentsOfFile)(self, _cmd, path);
+    if ([path isKindOfClass:[NSString class]] && [path hasSuffix:@"preferences.plist"] &&
+        [result isKindOfClass:[NSDictionary class]]) {
+        FSLog(@"[FeaturePruning] preferences.plist sanitized (init path)");
+        return FPSanitizedPreferences(result);
+    }
+    return result;
+}
+
+static void FPInstallPreferencesHooks(void)
+{
+    Method classMethod = class_getClassMethod([NSDictionary class],
+        sel_registerName("dictionaryWithContentsOfFile:"));
+    if (classMethod) {
+        origDictWithContentsOfFile = method_getImplementation(classMethod);
+        method_setImplementation(classMethod, (IMP)FP_dictWithContentsOfFile);
+    }
+    Method instanceMethod = class_getInstanceMethod([NSDictionary class],
+        sel_registerName("initWithContentsOfFile:"));
+    if (instanceMethod) {
+        origDictInitWithContentsOfFile = method_getImplementation(instanceMethod);
+        method_setImplementation(instanceMethod, (IMP)FP_dictInitWithContentsOfFile);
+    }
+}
+
 __attribute__((constructor)) static void FeaturePruningInit(void)
 {
     Class pageClass = NSClassFromString(@"TGPageViewController");
@@ -141,6 +217,8 @@ __attribute__((constructor)) static void FeaturePruningInit(void)
     FPSwizzle(appsClass, "itemsForPanelMenuManager:", (IMP)FPFilterPanelApps, &origAppsPanel);
     FPSwizzle(appsClass, "customMenuElementItemsForItem:sourceView:sourceRect:",
               (IMP)FPFilterCustomMenuApps, &origAppsCustomMenu);
+
+    FPInstallPreferencesHooks();
 
     FSLog(@"[FeaturePruning] root-only menu pruning installed");
 }

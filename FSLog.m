@@ -6,8 +6,13 @@ static NSString *logPath(void)
     static NSString *path;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        path = [[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]
-            stringByAppendingPathComponent:@"filzaslop.log"];
+        // keep the log inside the Device Storage virtual root so it is reachable
+        // from Filza's own browser; create it early, MCM start reuses the dir
+        NSString *documents = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+        NSString *deviceStorage = [documents stringByAppendingPathComponent:@"Device Storage"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:deviceStorage
+                                  withIntermediateDirectories:YES attributes:nil error:nil];
+        path = [deviceStorage stringByAppendingPathComponent:@"filzaslop.log"];
     });
     return path;
 }
