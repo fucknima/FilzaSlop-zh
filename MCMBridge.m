@@ -1,3 +1,4 @@
+#include "FSLog.h"
 #import "MCMBridge.h"
 
 #import <dlfcn.h>

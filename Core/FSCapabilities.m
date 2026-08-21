@@ -1,3 +1,4 @@
+#include "FSLog.h"
 #import "FSCapabilities.h"
 #import "MCMBridge.h"
 #import "ArchiveUnzipFix.h"
@@ -37,7 +38,7 @@ BOOL FSCapSystemModification(void) { return NO; }
 
 __attribute__((constructor)) static void FSCapabilitiesLogSnapshot(void)
 {
-    NSLog(@"[FSCapabilities] normal=%d archive=%d network=%d mcm=%d rootHelper=%d rootShell=%d packageManager=%d systemModification=%d",
+    FSLog(@"[FSCapabilities] normal=%d archive=%d network=%d mcm=%d rootHelper=%d rootShell=%d packageManager=%d systemModification=%d",
           FSCapNormalFilesystem(), FSCapArchive(), FSCapNetwork(),
           FSCapMCMContainers(), FSCapRootHelper(), FSCapRootShell(),
           FSCapPackageManager(), FSCapSystemModification());

@@ -1,3 +1,4 @@
+#include "FSLog.h"
 @import UIKit;
 #import <objc/runtime.h>
 
@@ -88,13 +89,13 @@ static BOOL TGFIFocusVisibleFieldIfStillNeeded(id self, NSString *reason,
         return NO;
 
     if (requireCommittedHost && !TGFIKeyboardHostCommitted(self)) {
-        NSLog(@"[RenameResponderFix] %@ arrived but keyboard host is not committed yet",
+        FSLog(@"[RenameResponderFix] %@ arrived but keyboard host is not committed yet",
               reason);
         return NO;
     }
 
     UIView *main = TGFIValue(self, @"mainInputView");
-    NSLog(@"[RenameResponderFix] focus input after %@ hidden=%p input=%p mainWindow=%@ super=%@",
+    FSLog(@"[RenameResponderFix] focus input after %@ hidden=%p input=%p mainWindow=%@ super=%@",
           reason, hidden, input,
           NSStringFromClass(main.window.class), NSStringFromClass(main.superview.class));
     return [input becomeFirstResponder];
@@ -189,7 +190,7 @@ static void hook_TGFocused_textFieldDidBeginEditing(id self, SEL _cmd,
         }
     });
 
-    NSLog(@"[RenameResponderFix] hidden field began; waiting for keyboard WillShow commit");
+    FSLog(@"[RenameResponderFix] hidden field began; waiting for keyboard WillShow commit");
 }
 
 static void InstallTGFocusedResponderTimingFix(void) {
@@ -197,13 +198,13 @@ static void InstallTGFocusedResponderTimingFix(void) {
     SEL sel = NSSelectorFromString(@"textFieldDidBeginEditing:");
     Method method = cls ? class_getInstanceMethod(cls, sel) : NULL;
     if (!method) {
-        NSLog(@"[RenameResponderFix] TGFocusedInput textFieldDidBeginEditing: not found");
+        FSLog(@"[RenameResponderFix] TGFocusedInput textFieldDidBeginEditing: not found");
         return;
     }
 
     gOrigTGFocusedDidBegin = method_getImplementation(method);
     method_setImplementation(method, (IMP)hook_TGFocused_textFieldDidBeginEditing);
-    NSLog(@"[RenameResponderFix] installed original=%p replacement=%p",
+    FSLog(@"[RenameResponderFix] installed original=%p replacement=%p",
           gOrigTGFocusedDidBegin, hook_TGFocused_textFieldDidBeginEditing);
 }
 

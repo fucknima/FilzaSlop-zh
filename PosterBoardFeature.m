@@ -1,3 +1,4 @@
+#include "FSLog.h"
 #import "PosterBoardFeature.h"
 
 #import "MCMFilzaIntegration.h"
@@ -919,9 +920,9 @@ static void PBInstallBundledSamples(void)
         if (![manager fileExistsAtPath:destination]) {
             NSError *error = nil;
             if ([manager copyItemAtPath:source toPath:destination error:&error])
-                NSLog(@"[WallpaperLab] installed bundled sample %@", name);
+                FSLog(@"[WallpaperLab] installed bundled sample %@", name);
             else
-                NSLog(@"[WallpaperLab] bundled sample copy failed %@ detail=%@", name, error);
+                FSLog(@"[WallpaperLab] bundled sample copy failed %@ detail=%@", name, error);
         }
     }
 }
@@ -975,12 +976,12 @@ static void PBStartAutomaticCipherImport(void)
                     [manager removeItemAtPath:failurePath error:nil];
                     [result writeToFile:readyPath atomically:YES
                         encoding:NSUTF8StringEncoding error:nil];
-                    NSLog(@"[WallpaperLab] automatic Cipher import succeeded: %@", result);
+                    FSLog(@"[WallpaperLab] automatic Cipher import succeeded: %@", result);
                 } else {
                     [manager removeItemAtPath:readyPath error:nil];
                     [error.localizedDescription writeToFile:failurePath atomically:YES
                         encoding:NSUTF8StringEncoding error:nil];
-                    NSLog(@"[WallpaperLab] automatic Cipher import failed: %@", error);
+                    FSLog(@"[WallpaperLab] automatic Cipher import failed: %@", error);
                 }
             });
     });
@@ -1161,7 +1162,7 @@ void PBWallpaperConfigureBrowser(UIViewController *controller, NSString *current
         // wallpaper action replaces it; Edit returns in child directories.
         [items removeAllObjects];
         [items addObject:button];
-        NSLog(@"[WallpaperLab] installed navigation action class=%@ path=%@ canonical=%@",
+        FSLog(@"[WallpaperLab] installed navigation action class=%@ path=%@ canonical=%@",
             NSStringFromClass(controller.class), currentPath, PBCanonicalPath(currentPath));
     }
     controller.navigationItem.rightBarButtonItems = items;

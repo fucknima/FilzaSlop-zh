@@ -1,3 +1,4 @@
+#include "FSLog.h"
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 
@@ -52,7 +53,7 @@ static void FSStartupReloadBrowser(void)
     SEL loadSelector = NSSelectorFromString(@"doLoadingPage");
     if ([controller respondsToSelector:loadSelector]) {
         ((void (*)(id, SEL))objc_msgSend)(controller, loadSelector);
-        NSLog(@"[StartupProgress] reloaded browser after background initialization class=%@",
+        FSLog(@"[StartupProgress] reloaded browser after background initialization class=%@",
               NSStringFromClass(controller.class));
     }
 }
@@ -171,7 +172,7 @@ static void FSStartupReloadBrowser(void)
     self.statusLabel = status;
     self.percentLabel = percent;
     self.spinner = spinner;
-    NSLog(@"[StartupProgress] overlay shown progress=%.3f status=%@",
+    FSLog(@"[StartupProgress] overlay shown progress=%.3f status=%@",
           self.latestProgress, self.latestStatus);
 }
 
@@ -216,7 +217,7 @@ static void FSStartupReloadBrowser(void)
             self.statusLabel = nil;
             self.percentLabel = nil;
             self.spinner = nil;
-            NSLog(@"[StartupProgress] overlay finished");
+            FSLog(@"[StartupProgress] overlay finished");
         }];
     });
 }

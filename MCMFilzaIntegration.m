@@ -1,3 +1,4 @@
+#include "FSLog.h"
 #import "MCMFilzaIntegration.h"
 
 #import "MCMBridge.h"
@@ -203,13 +204,13 @@ void MCMFilzaRecordDeletedGeneratedPath(NSString *path)
         [defaults setObject:values.array forKey:kMCMDeletedGeneratedPathsKey];
         [defaults synchronize];
     }
-    NSLog(@"[GeneratedFiles] recorded deletion %@", key);
+    FSLog(@"[GeneratedFiles] recorded deletion %@", key);
 }
 
 static BOOL MCMWriteGeneratedString(NSString *text, NSString *path)
 {
     if (MCMGeneratedPathWasDeleted(path)) {
-        NSLog(@"[GeneratedFiles] kept deleted path absent %@", path);
+        FSLog(@"[GeneratedFiles] kept deleted path absent %@", path);
         return NO;
     }
     return [text writeToFile:path atomically:YES
@@ -219,7 +220,7 @@ static BOOL MCMWriteGeneratedString(NSString *text, NSString *path)
 static BOOL MCMWriteGeneratedPropertyList(id value, NSString *path)
 {
     if (MCMGeneratedPathWasDeleted(path)) {
-        NSLog(@"[GeneratedFiles] kept deleted path absent %@", path);
+        FSLog(@"[GeneratedFiles] kept deleted path absent %@", path);
         return NO;
     }
     return [value writeToFile:path atomically:YES];
@@ -431,18 +432,18 @@ static void MCMInstallLiveContainerLink(NSFileManager *manager, NSString *root,
     struct stat status = {0};
     if (lstat(link.fileSystemRepresentation, &status) == 0) {
         if (!S_ISLNK(status.st_mode)) {
-            NSLog(@"[LiveContainer] keeping non-link path %@", link);
+            FSLog(@"[LiveContainer] keeping non-link path %@", link);
             return;
         }
         if (unlink(link.fileSystemRepresentation) != 0) {
-            NSLog(@"[LiveContainer] could not refresh link %@ errno=%d", link, errno);
+            FSLog(@"[LiveContainer] could not refresh link %@ errno=%d", link, errno);
             return;
         }
     }
     if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
-        NSLog(@"[LiveContainer] link failed %@ -> %@ errno=%d", link, target, errno);
+        FSLog(@"[LiveContainer] link failed %@ -> %@ errno=%d", link, target, errno);
     else
-        NSLog(@"[LiveContainer] linked %@ -> %@", link, target);
+        FSLog(@"[LiveContainer] linked %@ -> %@", link, target);
 }
 
 static void MCMInstallArchiveAlias(NSFileManager *manager, NSString *root)
@@ -452,7 +453,7 @@ static void MCMInstallArchiveAlias(NSFileManager *manager, NSString *root)
     if (![manager createDirectoryAtPath:archive withIntermediateDirectories:YES
                              attributes:@{NSFilePosixPermissions: @0700}
                                   error:&error]) {
-        NSLog(@"[Archive] directory creation failed path=%@ error=%@", archive, error);
+        FSLog(@"[Archive] directory creation failed path=%@ error=%@", archive, error);
         return;
     }
 
@@ -460,18 +461,18 @@ static void MCMInstallArchiveAlias(NSFileManager *manager, NSString *root)
     struct stat status = {0};
     if (lstat(link.fileSystemRepresentation, &status) == 0) {
         if (!S_ISLNK(status.st_mode)) {
-            NSLog(@"[Archive] keeping non-link path %@", link);
+            FSLog(@"[Archive] keeping non-link path %@", link);
             return;
         }
         if (unlink(link.fileSystemRepresentation) != 0) {
-            NSLog(@"[Archive] stale alias removal failed path=%@ errno=%d", link, errno);
+            FSLog(@"[Archive] stale alias removal failed path=%@ errno=%d", link, errno);
             return;
         }
     }
     if (symlink(archive.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
-        NSLog(@"[Archive] alias failed %@ -> %@ errno=%d", link, archive, errno);
+        FSLog(@"[Archive] alias failed %@ -> %@ errno=%d", link, archive, errno);
     else
-        NSLog(@"[Archive] alias ready %@ -> %@", link, archive);
+        FSLog(@"[Archive] alias ready %@ -> %@", link, archive);
 }
 
 static void MCMInstallLiveContainerRoot(void)
@@ -523,7 +524,7 @@ static void MCMInstallLinkWithFailureLogging(NSString *directory,
     NSString *target = MCMActivate(containerClass, identifier, group, &error);
     if (!target) {
         if (logFailure)
-            NSLog(@"[MCMFilza] activation failed class=%llu id=%@ detail=%@",
+            FSLog(@"[MCMFilza] activation failed class=%llu id=%@ detail=%@",
                   containerClass, identifier, error);
         return;
     }
@@ -537,7 +538,7 @@ static void MCMInstallLinkWithFailureLogging(NSString *directory,
         unlink(link.fileSystemRepresentation);
     }
     if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
-        NSLog(@"[MCMFilza] symlink failed id=%@ errno=%d", identifier, errno);
+        FSLog(@"[MCMFilza] symlink failed id=%@ errno=%d", identifier, errno);
 }
 
 static void MCMInstallLink(NSString *directory, NSString *identifier,
@@ -579,7 +580,7 @@ static void MCMInstallDirectFilesystemLinks(NSString *directory,
             unlink(link.fileSystemRepresentation);
         }
         if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
-            NSLog(@"[MCMFilza] direct symlink failed id=%@ target=%@ errno=%d",
+            FSLog(@"[MCMFilza] direct symlink failed id=%@ target=%@ errno=%d",
                   identifier, target, errno);
     }
 }
@@ -597,13 +598,13 @@ static void MCMMigrateStorageEntry(NSFileManager *manager, NSString *directory,
         ![manager fileExistsAtPath:destination]) {
         NSError *error = nil;
         if (![manager moveItemAtPath:source toPath:destination error:&error])
-            NSLog(@"[MCMFilza] label migration failed old=%@ new=%@ error=%@",
+            FSLog(@"[MCMFilza] label migration failed old=%@ new=%@ error=%@",
                   source, destination, error);
         else
-            NSLog(@"[MCMFilza] label migration complete old=%@ new=%@",
+            FSLog(@"[MCMFilza] label migration complete old=%@ new=%@",
                   source, destination);
     } else if ([manager fileExistsAtPath:source]) {
-        NSLog(@"[MCMFilza] label migration skipped because destination exists old=%@ new=%@",
+        FSLog(@"[MCMFilza] label migration skipped because destination exists old=%@ new=%@",
               source, destination);
     }
 }
@@ -640,7 +641,7 @@ static void MCMInstallScopedLink(NSString *directory, NSString *linkName,
         if (lstat(link.fileSystemRepresentation, &stale) == 0 &&
             S_ISLNK(stale.st_mode))
             unlink(link.fileSystemRepresentation);
-        NSLog(@"[MCMFilza] scoped activation failed class=%llu id=%@ part=%llu domain=%@ detail=%@",
+        FSLog(@"[MCMFilza] scoped activation failed class=%llu id=%@ part=%llu domain=%@ detail=%@",
               containerClass, identifier, part, partDomain, error);
         return;
     }
@@ -653,9 +654,9 @@ static void MCMInstallScopedLink(NSString *directory, NSString *linkName,
         unlink(link.fileSystemRepresentation);
     }
     if (symlink(target.fileSystemRepresentation, link.fileSystemRepresentation) != 0)
-        NSLog(@"[MCMFilza] scoped symlink failed name=%@ errno=%d", linkName, errno);
+        FSLog(@"[MCMFilza] scoped symlink failed name=%@ errno=%d", linkName, errno);
     else
-        NSLog(@"[MCMFilza] scoped path ready name=%@ target=%@", linkName, target);
+        FSLog(@"[MCMFilza] scoped path ready name=%@ target=%@", linkName, target);
 }
 
 static NSDictionary *MCMExperimentalPathStatus(NSString *path)
@@ -824,7 +825,7 @@ static void MCMInstallFilesTraversalFolder(NSString *directory)
             MCMExperimentalPathStatus(absoluteTarget);
         if (!created) result[@"Error"] = detail ?: @"创建链接失败";
         [results addObject:result];
-        NSLog(@"[MCMFilza] Files portal name=%@ relative=%@ created=%d detail=%@",
+        FSLog(@"[MCMFilza] Files portal name=%@ relative=%@ created=%d detail=%@",
               name, relativeTarget, created, detail);
     }
 
@@ -889,7 +890,7 @@ static NSDictionary *MCMRunExperimentalProbe(NSString *directory,
     result[@"Status"] = linked ? @"linked" : @"failed";
     result[@"LinkPath"] = linkPath;
     if (!linked) result[@"Error"] = linkError ?: @"创建链接失败";
-    NSLog(@"[MCMFilza] experimental name=%@ class=%llu id=%@ part=%llu domain=%@ status=%@ target=%@ error=%@",
+    FSLog(@"[MCMFilza] experimental name=%@ class=%llu id=%@ part=%llu domain=%@ status=%@ target=%@ error=%@",
           name, containerClass, identifier, part, partDomain,
           result[@"Status"], target, result[@"Error"]);
     return result;
@@ -1045,7 +1046,7 @@ static void MCMLogExpectedIdentifierCoverage(NSString *label,
     NSMutableArray<NSString *> *missing = [NSMutableArray array];
     for (NSString *identifier in expected)
         if (![actual containsObject:identifier]) [missing addObject:identifier];
-    NSLog(@"[MCMFilza] %@ expected=%lu matched=%lu missing=%@", label,
+    FSLog(@"[MCMFilza] %@ expected=%lu matched=%lu missing=%@", label,
           (unsigned long)expected.count,
           (unsigned long)(expected.count - missing.count), missing);
 }
@@ -1061,7 +1062,7 @@ static void MCMResetAppLinksForTesting(NSString *directory)
             S_ISLNK(status.st_mode))
             unlink(path.fileSystemRepresentation);
     }
-    NSLog(@"[MCMFilza] reset App Data links for test");
+    FSLog(@"[MCMFilza] reset App Data links for test");
 }
 
 static NSArray<NSString *> *MCMLaunchServicesStoreIdentifiers(void)
@@ -1070,7 +1071,7 @@ static NSArray<NSString *> *MCMLaunchServicesStoreIdentifiers(void)
     NSString *error = nil;
     NSString *container = MCMActivate(10, @"com.apple.lsd", NO, &error);
     if (!container.length) {
-        NSLog(@"[MCMFilza] LaunchServices store unavailable detail=%@", error);
+        FSLog(@"[MCMFilza] LaunchServices store unavailable detail=%@", error);
         return @[];
     }
     NSString *caches = [container stringByAppendingPathComponent:@"Library/Caches"];
@@ -1092,7 +1093,7 @@ static NSArray<NSString *> *MCMLaunchServicesStoreIdentifiers(void)
         NSData *data = [NSData dataWithContentsOfFile:path
             options:NSDataReadingMappedIfSafe error:&readError];
         if (!data) {
-            NSLog(@"[MCMFilza] LaunchServices store read failed path=%@ error=%@",
+            FSLog(@"[MCMFilza] LaunchServices store read failed path=%@ error=%@",
                   path, readError);
             continue;
         }
@@ -1126,13 +1127,13 @@ static NSArray<NSString *> *MCMLaunchServicesStoreIdentifiers(void)
             }
             start = NSNotFound;
         }
-        NSLog(@"[MCMFilza] LaunchServices store path=%@ bytes=%lu candidates=%lu",
+        FSLog(@"[MCMFilza] LaunchServices store path=%@ bytes=%lu candidates=%lu",
               path, (unsigned long)data.length, (unsigned long)result.count);
         if (reachedLimit) break;
     }
     if (reachedLimit)
-        NSLog(@"[MCMFilza] LaunchServices store candidate limit reached");
-    NSLog(@"[MCMFilza] LaunchServices store total candidates=%lu",
+        FSLog(@"[MCMFilza] LaunchServices store candidate limit reached");
+    FSLog(@"[MCMFilza] LaunchServices store total candidates=%lu",
           (unsigned long)result.count);
     MCMLogExpectedIdentifierCoverage(@"LaunchServices store",
         [NSSet setWithArray:result.array]);
@@ -1224,7 +1225,7 @@ static NSArray<NSString *> *MCMDynamicIdentifiers(uint64_t containerClass)
 {
     NSString *error = nil;
     NSArray *identifiers = MCMEnumerateIdentifiersForClass(containerClass, 1024, &error);
-    NSLog(@"[MCMFilza] discovery class=%llu count=%lu detail=%@", containerClass,
+    FSLog(@"[MCMFilza] discovery class=%llu count=%lu detail=%@", containerClass,
           (unsigned long)identifiers.count, error);
     NSMutableArray *safe = [NSMutableArray arrayWithCapacity:identifiers.count];
     for (NSString *identifier in identifiers)
@@ -1583,13 +1584,13 @@ static void MCMPruneEmptyGeneratedDirectory(NSString *directory)
         NSArray *targetEntries = [fm contentsOfDirectoryAtPath:path error:nil];
         if (targetEntries.count == 0) {
             unlink(path.fileSystemRepresentation);
-            NSLog(@"[MCMFilza] removed empty generated link path=%@", path);
+            FSLog(@"[MCMFilza] removed empty generated link path=%@", path);
         }
     }
 
     entries = [fm contentsOfDirectoryAtPath:directory error:nil];
     if (entries.count == 0 && rmdir(directory.fileSystemRepresentation) == 0)
-        NSLog(@"[MCMFilza] removed empty category path=%@", directory);
+        FSLog(@"[MCMFilza] removed empty category path=%@", directory);
 }
 
 static void MCMPrepareStartupRoot(void)
@@ -1651,13 +1652,13 @@ void MCMFilzaStart(void)
                 MCMPostStartupProgress(0.06, @"正在检查容器访问…");
                 NSString *actual = MCMSignedCodeIdentifier();
                 if (![actual isEqualToString:kRequiredIdentifier]) {
-                    NSLog(@"[MCMFilza] disabled: signed code identifier %@ must be %@ (bundle=%@)",
+                    FSLog(@"[MCMFilza] disabled: signed code identifier %@ must be %@ (bundle=%@)",
                           actual, kRequiredIdentifier, NSBundle.mainBundle.bundleIdentifier);
                     MCMFinishStartup(@"设备存储不可用");
                     return;
                 }
                 if (!MCMBridgeAvailable()) {
-                    NSLog(@"[MCMFilza] disabled: ContainerManager symbols unavailable");
+                    FSLog(@"[MCMFilza] disabled: ContainerManager symbols unavailable");
                     MCMFinishStartup(@"ContainerManager 不可用");
                     return;
                 }
@@ -1891,7 +1892,7 @@ void MCMFilzaStart(void)
                 MCMRunGeneratedDeletionProbe(fm, root);
                 NSError *listError = nil;
                 NSArray *visibleEntries = [fm contentsOfDirectoryAtPath:root error:&listError];
-                NSLog(@"[MCMFilza] ready root=%@ active_leases=%lu entries=%@ list_error=%@", root,
+                FSLog(@"[MCMFilza] ready root=%@ active_leases=%lu entries=%@ list_error=%@", root,
                       (unsigned long)gLeases.count, visibleEntries, listError);
                 MCMFinishStartup(@"设备存储已就绪");
             }

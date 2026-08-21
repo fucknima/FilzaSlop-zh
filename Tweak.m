@@ -1,3 +1,4 @@
+#include "FSLog.h"
 @import UIKit;
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -72,7 +73,7 @@ static void hook_fileSystemUpdateEditableUI(id self, SEL _cmd) {
 static void hook_fileSystemSetCurrentPath(id self, SEL _cmd, id requestedPath) {
     NSString *path = redirectedLegacyBrowserPath(requestedPath);
     if (path && ![path isEqual:requestedPath])
-        NSLog(@"[DeviceStorage] redirected legacy browser path to %@", path);
+        FSLog(@"[DeviceStorage] redirected legacy browser path to %@", path);
     ((void(*)(id, SEL, id))orig_fileSystemSetCurrentPath)(self, _cmd, path ?: requestedPath);
     refreshWallpaperButton(self, path ?: requestedPath);
     // Filza rebuilds its Edit item after loading a directory. Re-apply the
@@ -101,7 +102,7 @@ static void hook_fileSystemViewWillAppear(id self, SEL _cmd, BOOL animated) {
     if (redirected && ![redirected isEqual:currentPath]) {
         ((void(*)(id, SEL, id))objc_msgSend)(self,
             NSSelectorFromString(@"setCurrentPath:"), redirected);
-        NSLog(@"[DeviceStorage] repaired initial browser path from %@ to %@",
+        FSLog(@"[DeviceStorage] repaired initial browser path from %@ to %@",
             currentPath, redirected);
     }
     ((void(*)(id, SEL, BOOL))orig_fileSystemViewWillAppear)(self, _cmd, animated);
@@ -109,7 +110,7 @@ static void hook_fileSystemViewWillAppear(id self, SEL _cmd, BOOL animated) {
     if (firstAppearance && currentPath.length == 0) {
         ((void(*)(id, SEL, id))objc_msgSend)(self,
             NSSelectorFromString(@"setCurrentPath:"), root);
-        NSLog(@"[DeviceStorage] initialized empty browser path to %@", root);
+        FSLog(@"[DeviceStorage] initialized empty browser path to %@", root);
     }
 
     // Older Filza state restoration can preserve the navigation title even
@@ -138,7 +139,7 @@ static void hook_fileSystemViewWillAppear(id self, SEL _cmd, BOOL animated) {
         SEL loadSelector = NSSelectorFromString(@"doLoadingPage");
         if (visibleInsideRoot && [self respondsToSelector:loadSelector]) {
             ((void(*)(id, SEL))objc_msgSend)(self, loadSelector);
-            NSLog(@"[DeviceStorage] reloaded visible browser path %@", visiblePath);
+            FSLog(@"[DeviceStorage] reloaded visible browser path %@", visiblePath);
         }
     });
 }
@@ -200,17 +201,17 @@ static BOOL FSAddPathToZip(FSMinizipFile archive, NSString *sourcePath,
     if ([excludedPaths containsObject:standardSource]) return YES;
     NSString *safeEntry = FSSafeZipEntryPath(entryPath);
     if (!safeEntry.length) {
-        NSLog(@"[ZipCreateFix] rejected entry path %@", entryPath);
+        FSLog(@"[ZipCreateFix] rejected entry path %@", entryPath);
         return NO;
     }
 
     struct stat status = {0};
     if (lstat(sourcePath.fileSystemRepresentation, &status) != 0) {
-        NSLog(@"[ZipCreateFix] cannot stat %@: %s", sourcePath, strerror(errno));
+        FSLog(@"[ZipCreateFix] cannot stat %@: %s", sourcePath, strerror(errno));
         return NO;
     }
     if (S_ISLNK(status.st_mode)) {
-        NSLog(@"[ZipCreateFix] refusing symbolic link %@", sourcePath);
+        FSLog(@"[ZipCreateFix] refusing symbolic link %@", sourcePath);
         return NO;
     }
 
@@ -219,7 +220,7 @@ static BOOL FSAddPathToZip(FSMinizipFile archive, NSString *sourcePath,
         int openResult = FSMinizipOpenNewFile64(archive,
             directoryEntry.UTF8String, NULL, NULL, 0, NULL, 0, NULL, 0, 0, 0);
         if (openResult != 0 || FSMinizipCloseFile(archive) != 0) {
-            NSLog(@"[ZipCreateFix] cannot add directory %@ code=%d",
+            FSLog(@"[ZipCreateFix] cannot add directory %@ code=%d",
                   sourcePath, openResult);
             return NO;
         }
@@ -228,7 +229,7 @@ static BOOL FSAddPathToZip(FSMinizipFile archive, NSString *sourcePath,
             contentsOfDirectoryAtPath:sourcePath error:&listError]
             sortedArrayUsingSelector:@selector(compare:)];
         if (!children) {
-            NSLog(@"[ZipCreateFix] cannot list %@: %@", sourcePath, listError);
+            FSLog(@"[ZipCreateFix] cannot list %@: %@", sourcePath, listError);
             return NO;
         }
         for (NSString *child in children) {
@@ -240,14 +241,14 @@ static BOOL FSAddPathToZip(FSMinizipFile archive, NSString *sourcePath,
         return YES;
     }
     if (!S_ISREG(status.st_mode)) {
-        NSLog(@"[ZipCreateFix] unsupported file type %@", sourcePath);
+        FSLog(@"[ZipCreateFix] unsupported file type %@", sourcePath);
         return NO;
     }
 
     int descriptor = open(sourcePath.fileSystemRepresentation,
                           O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (descriptor < 0) {
-        NSLog(@"[ZipCreateFix] cannot open %@: %s", sourcePath, strerror(errno));
+        FSLog(@"[ZipCreateFix] cannot open %@: %s", sourcePath, strerror(errno));
         return NO;
     }
     int openResult = FSMinizipOpenNewFile64(archive, safeEntry.UTF8String,
@@ -255,7 +256,7 @@ static BOOL FSAddPathToZip(FSMinizipFile archive, NSString *sourcePath,
         (uint64_t)status.st_size >= UINT32_MAX);
     if (openResult != 0) {
         close(descriptor);
-        NSLog(@"[ZipCreateFix] cannot open entry %@ code=%d", safeEntry, openResult);
+        FSLog(@"[ZipCreateFix] cannot open entry %@ code=%d", safeEntry, openResult);
         return NO;
     }
 
@@ -267,7 +268,7 @@ static BOOL FSAddPathToZip(FSMinizipFile archive, NSString *sourcePath,
         if (count < 0 && errno == EINTR) continue;
         if (count < 0 || FSMinizipWrite(archive, buffer,
                                        (unsigned)count) != 0) {
-            NSLog(@"[ZipCreateFix] cannot stream %@: %s", sourcePath,
+            FSLog(@"[ZipCreateFix] cannot stream %@: %s", sourcePath,
                   count < 0 ? strerror(errno) : "minizip write failed");
             success = NO;
             break;
@@ -306,7 +307,7 @@ static id hook_ZipFiles(id self, SEL _cmd, id files, id toFilePath, id currentDi
                 @".filza-zip-%@.tmp", NSUUID.UUID.UUIDString]];
         archive = FSMinizipOpen64(temporaryPath.fileSystemRepresentation, 0);
         if (!archive) {
-            NSLog(@"[ZipCreateFix] cannot create temporary archive %@",
+            FSLog(@"[ZipCreateFix] cannot create temporary archive %@",
                   temporaryPath);
             return nil;
         }
@@ -337,7 +338,7 @@ static id hook_ZipFiles(id self, SEL _cmd, id files, id toFilePath, id currentDi
         }
         if (rename(temporaryPath.fileSystemRepresentation,
                    targetPath.fileSystemRepresentation) != 0) {
-            NSLog(@"[ZipCreateFix] cannot commit %@: %s", targetPath,
+            FSLog(@"[ZipCreateFix] cannot commit %@: %s", targetPath,
                   strerror(errno));
             unlink(temporaryPath.fileSystemRepresentation);
             return nil;
@@ -345,7 +346,7 @@ static id hook_ZipFiles(id self, SEL _cmd, id files, id toFilePath, id currentDi
         temporaryPath = nil;
         return FSZipFileItemAtPath(targetPath);
     } @catch (NSException *exception) {
-        NSLog(@"[ZipCreateFix] exception: %@", exception);
+        FSLog(@"[ZipCreateFix] exception: %@", exception);
         if (archive) FSMinizipClose(archive, NULL);
         if (temporaryPath) unlink(temporaryPath.fileSystemRepresentation);
         return nil;
@@ -408,7 +409,7 @@ static NSString *findBundlePath(NSString *bundleId) {
 static NSString *findDataContainer(NSString *bundleId) {
     NSString *error = nil;
     NSString *path = MCMFilzaDataContainerPath(bundleId, &error);
-    if (!path) NSLog(@"[MCMFilza] data lookup failed id=%@ detail=%@", bundleId, error);
+    if (!path) FSLog(@"[MCMFilza] data lookup failed id=%@ detail=%@", bundleId, error);
     return path;
 }
 
@@ -493,7 +494,7 @@ static id hook_allApplications(id self, SEL _cmd) {
             if (proxy) [apps addObject:proxy];
         }
     }
-    NSLog(@"[Tweak] Apps Manager: found %lu apps via filesystem", (unsigned long)apps.count);
+    FSLog(@"[Tweak] Apps Manager: found %lu apps via filesystem", (unsigned long)apps.count);
     return apps;
 }
 
@@ -601,7 +602,7 @@ static id hook_showAlertWithTitle(id self, SEL _cmd, id title, id text, id cance
     if ([textStr isKindOfClass:[NSString class]]) {
         if ([textStr containsString:@"binary was modified"] ||
             [textStr containsString:@"reinstall Filza"]) {
-            NSLog(@"[Tweak] Suppressed integrity alert");
+            FSLog(@"[Tweak] Suppressed integrity alert");
             return nil;
         }
     }
@@ -619,7 +620,7 @@ static void hook_activationViewDidLoad(id self, SEL _cmd) {
         ((void(*)(id,SEL,BOOL,id))objc_msgSend)(self,
             NSSelectorFromString(@"dismissViewControllerAnimated:completion:"), NO, nil);
     });
-    NSLog(@"[Tweak] Suppressed activation nag");
+    FSLog(@"[Tweak] Suppressed activation nag");
 }
 
 #pragma mark - MCM-aware local file operations
@@ -991,18 +992,18 @@ static void archiveSelectedItems(id controller, NSArray *indexPaths) {
                 else if ([manager moveItemAtPath:source toPath:destination error:&error]) {
                     MCMFilzaRecordDeletedGeneratedPath(source);
                     moved++;
-                    NSLog(@"[ContainerArchive] moved %@ -> %@", source, destination);
+                    FSLog(@"[ContainerArchive] moved %@ -> %@", source, destination);
                 }
             }
             if (error) {
                 [errors addObject:error];
-                NSLog(@"[ContainerArchive] failed source=%@ error=%@", source, error);
+                FSLog(@"[ContainerArchive] failed source=%@ error=%@", source, error);
             }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             reloadFileSystemController(viewController);
             showArchiveResult(viewController, moved, errors);
-            NSLog(@"[ContainerArchive] complete moved=%lu failed=%lu destination=%@",
+            FSLog(@"[ContainerArchive] complete moved=%lu failed=%lu destination=%@",
                   (unsigned long)moved, (unsigned long)errors.count, archive);
         });
     });
@@ -1096,7 +1097,7 @@ static void hook_fileSystemAskDeleteItems(id self, SEL _cmd, NSArray *indexPaths
     }
 
     NSArray *capturedIndexPaths = [indexPaths copy] ?: @[];
-    NSLog(@"[ContainerDelete] intercepted class=%@ items=%lu",
+    FSLog(@"[ContainerDelete] intercepted class=%@ items=%lu",
           NSStringFromClass([self class]), (unsigned long)items.count);
 
     NSString *message = items.count == 1
@@ -1149,16 +1150,16 @@ static void performPermanentDelete(id self, NSArray *indexPaths,
         } else if ([NSFileManager.defaultManager removeItemAtPath:path error:&error]) {
             MCMFilzaRecordDeletedGeneratedPath(path);
             [deleted addObject:item];
-            NSLog(@"[ContainerDelete] deleted %@", path);
+            FSLog(@"[ContainerDelete] deleted %@", path);
         }
         if (error) {
             [errors addObject:error];
-            NSLog(@"[ContainerDelete] failed path=%@ error=%@", path, error);
+            FSLog(@"[ContainerDelete] failed path=%@ error=%@", path, error);
         }
     }
     if (completion) completion(deleted);
     showDeleteFailure(self, errors);
-    NSLog(@"[ContainerDelete] complete deleted=%lu failed=%lu",
+    FSLog(@"[ContainerDelete] complete deleted=%lu failed=%lu",
           (unsigned long)deleted.count, (unsigned long)errors.count);
 }
 
@@ -1267,11 +1268,11 @@ static void hook_copyFilesAndDirectoryFromPasteboard(id self, SEL _cmd) {
                 setPastePOSIXError(&error, EINVAL, @"paste directory into itself", source);
             } else if (directCopyItem(source, destination, &error)) {
                 copied++;
-                NSLog(@"[ContainerPaste] copied %@ -> %@", source, destination);
+                FSLog(@"[ContainerPaste] copied %@ -> %@", source, destination);
             }
             if (error) {
                 [errors addObject:error];
-                NSLog(@"[ContainerPaste] failed: %@", error.localizedDescription);
+                FSLog(@"[ContainerPaste] failed: %@", error.localizedDescription);
             }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1279,7 +1280,7 @@ static void hook_copyFilesAndDirectoryFromPasteboard(id self, SEL _cmd) {
             if ([controller respondsToSelector:loadSelector])
                 ((void(*)(id, SEL))objc_msgSend)(controller, loadSelector);
             showPasteFailure(controller, errors);
-            NSLog(@"[ContainerPaste] complete copied=%lu failed=%lu destination=%@",
+            FSLog(@"[ContainerPaste] complete copied=%lu failed=%lu destination=%@",
                 (unsigned long)copied, (unsigned long)errors.count, destinationDirectory);
         });
     });
@@ -1305,7 +1306,7 @@ static void runOptInPasteCopyProbe(void) {
         [NSFileManager.defaultManager removeItemAtPath:destination error:nil];
     BOOL sourceRemoved = !sourceWritten ||
         [NSFileManager.defaultManager removeItemAtPath:source error:nil];
-    NSLog(@"[ContainerPasteProbe] copied=%d verified=%d cleanup=%d error=%@",
+    FSLog(@"[ContainerPasteProbe] copied=%d verified=%d cleanup=%d error=%@",
         copied, verified, destinationRemoved && sourceRemoved, error);
 }
 
@@ -1502,7 +1503,7 @@ static void installHooks(void) {
         if (m) { orig_didSelectItem = method_getImplementation(m); method_setImplementation(m, (IMP)hook_didSelectItem); }
     }
 
-    NSLog(@"[Tweak] All hooks installed");
+    FSLog(@"[Tweak] All hooks installed");
 }
 
 #pragma mark - MCM container activation
@@ -1527,7 +1528,7 @@ static void runWriteProbeAtDirectory(NSString *label, NSString *directory) {
     struct stat status = {0};
     BOOL removed = descriptor >= 0 && cleanupResult == 0 &&
         lstat(path.fileSystemRepresentation, &status) != 0 && errno == ENOENT;
-    NSLog(@"[WriteProbe] target=%@ create=%d errno=%d bytes=%zd readback=%d cleanup=%d path=%@",
+    FSLog(@"[WriteProbe] target=%@ create=%d errno=%d bytes=%zd readback=%d cleanup=%d path=%@",
         label, descriptor >= 0, createError, written, verified, removed, path);
 }
 
@@ -1539,7 +1540,7 @@ static void runWritableOpenProbe(NSString *label, NSString *path) {
     BOOL regularFile = descriptor >= 0 && fstat(descriptor, &status) == 0 &&
         S_ISREG(status.st_mode);
     if (descriptor >= 0) close(descriptor);
-    NSLog(@"[WriteProbe] target=%@ open_rdwr=%d errno=%d regular=%d size=%lld path=%@",
+    FSLog(@"[WriteProbe] target=%@ open_rdwr=%d errno=%d regular=%d size=%lld path=%@",
         label, descriptor >= 0, openError, regularFile,
         regularFile ? (long long)status.st_size : -1LL, path);
 }
@@ -1599,7 +1600,7 @@ static BOOL repairActiveBrowserPath(void) {
     SEL setCurrentPathSelector = NSSelectorFromString(@"setCurrentPath:");
     if (![controller respondsToSelector:currentPathSelector] ||
         ![controller respondsToSelector:setCurrentPathSelector]) {
-        NSLog(@"[DeviceStorage] waiting for browser controller; active=%@",
+        FSLog(@"[DeviceStorage] waiting for browser controller; active=%@",
             NSStringFromClass(controller.class));
         return NO;
     }
@@ -1612,13 +1613,13 @@ static BOOL repairActiveBrowserPath(void) {
         ((void(*)(id, SEL, id))objc_msgSend)(controller,
             setCurrentPathSelector, root);
         controller.navigationItem.title = @"设备存储";
-        NSLog(@"[DeviceStorage] repaired active browser path from %@ to %@ class=%@",
+        FSLog(@"[DeviceStorage] repaired active browser path from %@ to %@ class=%@",
             currentPath, root, NSStringFromClass(controller.class));
     }
     SEL loadSelector = NSSelectorFromString(@"doLoadingPage");
     if ([controller respondsToSelector:loadSelector]) {
         ((void(*)(id, SEL))objc_msgSend)(controller, loadSelector);
-        NSLog(@"[DeviceStorage] reloaded active browser path %@ class=%@",
+        FSLog(@"[DeviceStorage] reloaded active browser path %@ class=%@",
               root, NSStringFromClass(controller.class));
     }
     return YES;

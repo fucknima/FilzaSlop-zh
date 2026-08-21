@@ -1,3 +1,4 @@
+#include "FSLog.h"
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -54,11 +55,11 @@ static BOOL FPShouldDrop(id menuItem)
     NSString *title = nil;
     FPExtractItem(menuItem, &identifier, &title);
     if (identifier.length && [FPBlockedIdentifiers() containsObject:identifier.lowercaseString]) {
-        NSLog(@"[FeaturePruning] drop root-only menu item (id=%@)", identifier);
+        FSLog(@"[FeaturePruning] drop root-only menu item (id=%@)", identifier);
         return YES;
     }
     if (FPTitleBlocked(title)) {
-        NSLog(@"[FeaturePruning] drop root-only menu item (title=%@)", title);
+        FSLog(@"[FeaturePruning] drop root-only menu item (title=%@)", title);
         return YES;
     }
     return NO;
@@ -114,12 +115,12 @@ static NSArray *FPFilterCustomMenuApps(id self, SEL _cmd, id item, id sourceView
 static void FPSwizzle(Class cls, const char *selName, IMP newImp, IMP *origOut)
 {
     if (!cls) {
-        NSLog(@"[FeaturePruning] class missing for %s", selName);
+        FSLog(@"[FeaturePruning] class missing for %s", selName);
         return;
     }
     Method m = class_getInstanceMethod(cls, sel_registerName(selName));
     if (!m) {
-        NSLog(@"[FeaturePruning] method missing: %s on %@", selName, cls);
+        FSLog(@"[FeaturePruning] method missing: %s on %@", selName, cls);
         return;
     }
     *origOut = method_getImplementation(m);
@@ -141,5 +142,5 @@ __attribute__((constructor)) static void FeaturePruningInit(void)
     FPSwizzle(appsClass, "customMenuElementItemsForItem:sourceView:sourceRect:",
               (IMP)FPFilterCustomMenuApps, &origAppsCustomMenu);
 
-    NSLog(@"[FeaturePruning] root-only menu pruning installed");
+    FSLog(@"[FeaturePruning] root-only menu pruning installed");
 }

@@ -1,3 +1,4 @@
+#include "FSLog.h"
 #import <Foundation/Foundation.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -43,7 +44,7 @@ static NSDictionary<NSString *, NSNumber *> *FSMainExecutableLocalSymbols(void)
         NSData *data = [NSData dataWithContentsOfFile:path
             options:NSDataReadingMappedIfSafe error:&error];
         if (!data || data.length < sizeof(struct mach_header_64)) {
-            NSLog(@"[ArchiveUnzipFix] cannot map main executable: %@", error);
+            FSLog(@"[ArchiveUnzipFix] cannot map main executable: %@", error);
             symbols = @{};
             return;
         }
@@ -51,7 +52,7 @@ static NSDictionary<NSString *, NSNumber *> *FSMainExecutableLocalSymbols(void)
         const uint8_t *bytes = data.bytes;
         const struct mach_header_64 *header = (const struct mach_header_64 *)bytes;
         if (header->magic != MH_MAGIC_64) {
-            NSLog(@"[ArchiveUnzipFix] unsupported main Mach-O magic=0x%x", header->magic);
+            FSLog(@"[ArchiveUnzipFix] unsupported main Mach-O magic=0x%x", header->magic);
             symbols = @{};
             return;
         }
@@ -71,7 +72,7 @@ static NSDictionary<NSString *, NSNumber *> *FSMainExecutableLocalSymbols(void)
         }
 
         if (!symtab || symtab->symoff > data.length || symtab->stroff > data.length) {
-            NSLog(@"[ArchiveUnzipFix] main executable has no usable LC_SYMTAB");
+            FSLog(@"[ArchiveUnzipFix] main executable has no usable LC_SYMTAB");
             symbols = @{};
             return;
         }
@@ -79,7 +80,7 @@ static NSDictionary<NSString *, NSNumber *> *FSMainExecutableLocalSymbols(void)
         uint64_t symbolsBytes = (uint64_t)symtab->nsyms * sizeof(struct nlist_64);
         if ((uint64_t)symtab->symoff + symbolsBytes > data.length ||
             (uint64_t)symtab->stroff + symtab->strsize > data.length) {
-            NSLog(@"[ArchiveUnzipFix] malformed main symbol table bounds");
+            FSLog(@"[ArchiveUnzipFix] malformed main symbol table bounds");
             symbols = @{};
             return;
         }
@@ -116,7 +117,7 @@ static NSDictionary<NSString *, NSNumber *> *FSMainExecutableLocalSymbols(void)
                 found[symbol] = @(entry->n_value);
         }
         symbols = [found copy];
-        NSLog(@"[ArchiveUnzipFix] resolved %lu/%lu local minizip symbols",
+        FSLog(@"[ArchiveUnzipFix] resolved %lu/%lu local minizip symbols",
               (unsigned long)symbols.count, (unsigned long)wanted.count);
     });
     return symbols;
@@ -206,7 +207,7 @@ BOOL FSLoadInProcessUnzip(void)
         available = pFSUnzOpen64 && pFSUnzGoToFirstFile && pFSUnzGoToNextFile &&
             pFSUnzGetCurrentFileInfo64 && pFSUnzOpenCurrentFilePassword &&
             pFSUnzReadCurrentFile && pFSUnzCloseCurrentFile && pFSUnzClose;
-        NSLog(@"[ArchiveUnzipFix] in-process unzip available=%d", available);
+        FSLog(@"[ArchiveUnzipFix] in-process unzip available=%d", available);
     });
     return available;
 }
@@ -298,7 +299,7 @@ static NSArray *FSValidatedArchiveResult(id result, NSString **outMessage)
 {
     if (!result) return nil;
     if ([result isKindOfClass:NSArray.class]) return result;
-    NSLog(@"[ArchiveUnzipFix] rejected invalid result class=%@",
+    FSLog(@"[ArchiveUnzipFix] rejected invalid result class=%@",
           NSStringFromClass([result class]));
     FSSetArchiveMessage(outMessage, @"解压结果类型无效");
     return nil;
@@ -396,7 +397,7 @@ static void FSCleanupCreatedDirectories(NSArray<NSString *> *directories)
     for (NSString *path in directories.reverseObjectEnumerator) {
         if (rmdir(path.fileSystemRepresentation) != 0 &&
             errno != ENOENT && errno != ENOTEMPTY) {
-            NSLog(@"[ArchiveUnzipFix] cannot remove rollback directory %@: %s",
+            FSLog(@"[ArchiveUnzipFix] cannot remove rollback directory %@: %s",
                   path, strerror(errno));
         }
     }
@@ -559,13 +560,13 @@ static BOOL FSRollbackCommittedFiles(NSArray<NSDictionary *> *changes)
         if (backup) {
             if (rename(backup.fileSystemRepresentation,
                        path.fileSystemRepresentation) != 0) {
-                NSLog(@"[ArchiveUnzipFix] cannot restore backup %@ -> %@: %s",
+                FSLog(@"[ArchiveUnzipFix] cannot restore backup %@ -> %@: %s",
                       backup, path, strerror(errno));
                 complete = NO;
             }
         } else if (unlink(path.fileSystemRepresentation) != 0 &&
                    errno != ENOENT) {
-            NSLog(@"[ArchiveUnzipFix] cannot remove rollback file %@: %s",
+            FSLog(@"[ArchiveUnzipFix] cannot remove rollback file %@: %s",
                   path, strerror(errno));
             complete = NO;
         }
@@ -680,7 +681,7 @@ static BOOL FSCommitStagedExtraction(
             int saved = errno;
             if (backup && rename(backup.fileSystemRepresentation,
                                  target.fileSystemRepresentation) != 0) {
-                NSLog(@"[ArchiveUnzipFix] cannot restore immediate backup "
+                FSLog(@"[ArchiveUnzipFix] cannot restore immediate backup "
                       @"%@ -> %@: %s", backup, target, strerror(errno));
                 rollbackMayBeIncomplete = YES;
             }
@@ -716,7 +717,7 @@ static BOOL FSCommitStagedExtraction(
         mode_t permissions = (mode_t)(modeValue.unsignedShortValue & 0777);
         if (!permissions) permissions = 0755;
         if (chmod(path.fileSystemRepresentation, permissions) != 0) {
-            NSLog(@"[ArchiveUnzipFix] cannot apply directory mode to %@: %s",
+            FSLog(@"[ArchiveUnzipFix] cannot apply directory mode to %@: %s",
                   path, strerror(errno));
         }
     }
@@ -726,7 +727,7 @@ static BOOL FSCommitStagedExtraction(
         if (backupValue == NSNull.null) continue;
         NSString *backup = backupValue;
         if (unlink(backup.fileSystemRepresentation) != 0 && errno != ENOENT) {
-            NSLog(@"[ArchiveUnzipFix] cannot remove committed backup %@: %s",
+            FSLog(@"[ArchiveUnzipFix] cannot remove committed backup %@: %s",
                   backup, strerror(errno));
         }
     }
@@ -984,7 +985,7 @@ static NSArray *FSExtractRar(id archiveArgument, id destinationArgument,
     if (![NSFileManager.defaultManager removeItemAtPath:stagingDirectory
                                                    error:&cleanupError] &&
         cleanupError.code != NSFileNoSuchFileError) {
-        NSLog(@"[ArchiveUnzipFix] cannot remove RAR staging %@: %@",
+        FSLog(@"[ArchiveUnzipFix] cannot remove RAR staging %@: %@",
               stagingDirectory, cleanupError);
     }
     if (!success) {
@@ -1168,7 +1169,7 @@ static NSArray *FSExtractZip(id zipArgument, id destinationArgument,
     NSError *cleanupError = nil;
     if (![manager removeItemAtPath:stagingDirectory error:&cleanupError] &&
         cleanupError.code != NSFileNoSuchFileError) {
-        NSLog(@"[ArchiveUnzipFix] cannot remove staging directory %@: %@",
+        FSLog(@"[ArchiveUnzipFix] cannot remove staging directory %@: %@",
               stagingDirectory, cleanupError);
     }
     if (!success) {
@@ -1281,7 +1282,7 @@ void FSInstallArchiveUnzipFix(void)
 {
     Class zipper = NSClassFromString(@"Zipper");
     if (!zipper) {
-        NSLog(@"[ArchiveUnzipFix] Zipper class unavailable");
+        FSLog(@"[ArchiveUnzipFix] Zipper class unavailable");
         return;
     }
 
@@ -1303,10 +1304,10 @@ void FSInstallArchiveUnzipFix(void)
         dispatch_once(&plainOnceToken, ^{
             if (method_getImplementation(plain) != (IMP)FSHookUnzip)
                 method_setImplementation(plain, (IMP)FSHookUnzip);
-            NSLog(@"[ArchiveUnzipFix] installed plain Zipper extraction hook");
+            FSLog(@"[ArchiveUnzipFix] installed plain Zipper extraction hook");
         });
     } else {
-        NSLog(@"[ArchiveUnzipFix] incompatible plain Zipper method: %s",
+        FSLog(@"[ArchiveUnzipFix] incompatible plain Zipper method: %s",
               plain ? method_getTypeEncoding(plain) : "<missing>");
     }
 
@@ -1318,10 +1319,10 @@ void FSInstallArchiveUnzipFix(void)
                 method_setImplementation(protectedMethod,
                                          (IMP)FSHookUnzipWithPassword);
             }
-            NSLog(@"[ArchiveUnzipFix] installed password Zipper extraction hook");
+            FSLog(@"[ArchiveUnzipFix] installed password Zipper extraction hook");
         });
     } else {
-        NSLog(@"[ArchiveUnzipFix] incompatible password Zipper method: %s",
+        FSLog(@"[ArchiveUnzipFix] incompatible password Zipper method: %s",
               protectedMethod ? method_getTypeEncoding(protectedMethod)
                               : "<missing>");
     }
@@ -1331,10 +1332,10 @@ void FSInstallArchiveUnzipFix(void)
         dispatch_once(&rarOnceToken, ^{
             if (method_getImplementation(rar) != (IMP)FSHookUnrar)
                 method_setImplementation(rar, (IMP)FSHookUnrar);
-            NSLog(@"[ArchiveUnzipFix] installed plain RAR extraction hook");
+            FSLog(@"[ArchiveUnzipFix] installed plain RAR extraction hook");
         });
     } else {
-        NSLog(@"[ArchiveUnzipFix] incompatible plain RAR method: %s",
+        FSLog(@"[ArchiveUnzipFix] incompatible plain RAR method: %s",
               rar ? method_getTypeEncoding(rar) : "<missing>");
     }
 
@@ -1346,10 +1347,10 @@ void FSInstallArchiveUnzipFix(void)
                 method_setImplementation(protectedRar,
                                          (IMP)FSHookUnrarWithPassword);
             }
-            NSLog(@"[ArchiveUnzipFix] installed password RAR extraction hook");
+            FSLog(@"[ArchiveUnzipFix] installed password RAR extraction hook");
         });
     } else {
-        NSLog(@"[ArchiveUnzipFix] incompatible password RAR method: %s",
+        FSLog(@"[ArchiveUnzipFix] incompatible password RAR method: %s",
               protectedRar ? method_getTypeEncoding(protectedRar)
                            : "<missing>");
     }

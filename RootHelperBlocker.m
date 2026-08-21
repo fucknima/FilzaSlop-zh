@@ -1,3 +1,4 @@
+#include "FSLog.h"
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
@@ -24,7 +25,7 @@ static void RHBReplaceInstance(Class cls, const char *selName) {
     SEL sel = sel_registerName(selName);
     Method m = class_getInstanceMethod(cls, sel);
     if (!m) {
-        NSLog(@"[RootHelperBlocker] missing instance method %s on %@", selName, cls);
+        FSLog(@"[RootHelperBlocker] missing instance method %s on %@", selName, cls);
         return;
     }
     method_setImplementation(m, RHBPickImp(m));
@@ -34,7 +35,7 @@ static void RHBReplaceClassMethod(Class cls, const char *selName) {
     SEL sel = sel_registerName(selName);
     Method m = class_getClassMethod(cls, sel);
     if (!m) {
-        NSLog(@"[RootHelperBlocker] missing class method %s on %@", selName, cls);
+        FSLog(@"[RootHelperBlocker] missing class method %s on %@", selName, cls);
         return;
     }
     method_setImplementation(m, (IMP)rhbNoStub);
@@ -44,7 +45,7 @@ static void RHBInstall(void) {
     Class fm = NSClassFromString(@"TGRootFileManager");
     Class avail = NSClassFromString(@"TGAvailability");
     if (!fm || !avail) {
-        NSLog(@"[RootHelperBlocker] target classes not found (fm=%@ avail=%@)", fm, avail);
+        FSLog(@"[RootHelperBlocker] target classes not found (fm=%@ avail=%@)", fm, avail);
         return;
     }
 
@@ -57,7 +58,7 @@ static void RHBInstall(void) {
     RHBReplaceClassMethod(avail, "IsShellAvailable");
     RHBReplaceClassMethod(avail, "IsDEBAvailable");
 
-    NSLog(@"[RootHelperBlocker] root shell / dpkg fallback paths fused");
+    FSLog(@"[RootHelperBlocker] root shell / dpkg fallback paths fused");
 }
 
 __attribute__((constructor)) static void RootHelperBlockerInit(void) {
