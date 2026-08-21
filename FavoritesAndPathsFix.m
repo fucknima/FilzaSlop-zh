@@ -7,34 +7,30 @@
 
 static NSString *FPVirtualRoot(void) {
     NSString *root = MCMFilzaVirtualRoot();
-    if (root.length) return root;
-    // Fallback to the exact path you provided on this device
-    return @"/var/mobile/Containers/Data/Application/689CF24F-ED69-4E10-8639-A82585F067AD/Documents/Device Storage";
+    // Never hardcode UUID – MCMFilzaVirtualRoot() is dynamic and will change after reinstall.
+    // If it hasn't been initialized yet, return nil and let callers handle gracefully.
+    return root.length ? root : nil;
 }
 
 // 构造一个指向虚拟根的完整 FileItem（用于收藏夹为空时补上）
 static id FPCreateDeviceStorageItem(void) {
     NSString *root = FPVirtualRoot();
+    if (!root.length) return nil;
     Class FI = NSClassFromString(@"FileItem");
     if (!FI) return root;
     id item = [[FI alloc] init];
     @try {
-        // Use setFilePath: which will stat the directory and fill fileName/isDirectory correctly.
-        // setFilePath:attribute: with nil attribute also works but setFilePath: is simpler and less likely to crash.
         if ([item respondsToSelector:NSSelectorFromString(@"setFilePath:")]) {
             ((void(*)(id,SEL,id))objc_msgSend)(item, NSSelectorFromString(@"setFilePath:"), root);
         } else if ([item respondsToSelector:NSSelectorFromString(@"setFilePath:attribute:")]) {
             ((void(*)(id,SEL,id,id))objc_msgSend)(item, NSSelectorFromString(@"setFilePath:attribute:"), root, nil);
         }
-        // Ensure display name is 设备存储
         if ([item respondsToSelector:NSSelectorFromString(@"setAFileName:")]) {
             ((void(*)(id,SEL,id))objc_msgSend)(item, NSSelectorFromString(@"setAFileName:"), @"设备存储");
         }
-        // Verify it has a valid filePath, otherwise fallback to string
         NSString *p = nil;
         @try { p = [item performSelector:NSSelectorFromString(@"filePath")]; } @catch (__unused NSException *e) {}
         if (![p isEqualToString:root]) {
-            // If setFilePath: didn't stick, try the other setter
             if ([item respondsToSelector:NSSelectorFromString(@"setFilePath:attribute:")]) {
                 ((void(*)(id,SEL,id,id))objc_msgSend)(item, NSSelectorFromString(@"setFilePath:attribute:"), root, nil);
             }
@@ -49,6 +45,7 @@ static id FPCreateDeviceStorageItem(void) {
 
 static NSArray *FPFilteredFavorites(NSArray *orig) {
     NSString *keep = FPVirtualRoot();
+    if (!keep.length) return orig;
     NSMutableArray *filtered = [NSMutableArray array];
     if ([orig isKindOfClass:NSArray.class]) {
         for (id obj in orig) {
@@ -58,7 +55,6 @@ static NSArray *FPFilteredFavorites(NSArray *orig) {
                 @try { path = [obj performSelector:NSSelectorFromString(@"filePath")]; } @catch (__unused NSException *e) {}
             }
             if (path && [path isEqualToString:keep]) {
-                // Keep the exact virtual root entry, ensure its display name
                 @try {
                     if ([obj respondsToSelector:NSSelectorFromString(@"setAFileName:")])
                         ((void(*)(id,SEL,id))objc_msgSend)(obj, NSSelectorFromString(@"setAFileName:"), @"设备存储");
@@ -70,7 +66,6 @@ static NSArray *FPFilteredFavorites(NSArray *orig) {
             }
         }
     }
-    // If no virtual root in original, add one we create
     if (filtered.count == 0) {
         id item = FPCreateDeviceStorageItem();
         if (item) [filtered addObject:item];
@@ -93,17 +88,19 @@ static id hook_favoritedLinks(id self, SEL _cmd) {
 }
 
 static void hook_addItemToFavoritedLinks(id self, SEL _cmd, id item) {
+    NSString *keep = FPVirtualRoot();
+    if (!keep.length) {
+        if (orig_addItemToFavoritedLinks) ((void(*)(id,SEL,id))orig_addItemToFavoritedLinks)(self, _cmd, item);
+        return;
+    }
     NSString *path = nil;
     @try {
         if ([item isKindOfClass:NSString.class]) path = item;
         else if ([item respondsToSelector:NSSelectorFromString(@"filePath")])
             path = [item performSelector:NSSelectorFromString(@"filePath")];
     } @catch (__unused NSException *e) {}
-    NSString *keep = FPVirtualRoot();
-    // Allow Device Storage to be added, block everything else
     if ([path isEqualToString:keep]) {
         NSLog(@"[FavoritesFix] allowing add Device Storage %@", path);
-        // Ensure display name
         @try {
             if ([item respondsToSelector:NSSelectorFromString(@"setAFileName:")])
                 ((void(*)(id,SEL,id))objc_msgSend)(item, NSSelectorFromString(@"setAFileName:"), @"设备存储");
@@ -111,19 +108,18 @@ static void hook_addItemToFavoritedLinks(id self, SEL _cmd, id item) {
         if (orig_addItemToFavoritedLinks) ((void(*)(id,SEL,id))orig_addItemToFavoritedLinks)(self, _cmd, item);
         return;
     }
-    // For any other path, check if it's the virtual root, allow; otherwise ignore (don't add)
-    if (path && [path hasPrefix:keep]) {
-        // Item inside Device Storage – allow but not needed for favorites root
+    if (path && [path hasPrefix:[keep stringByAppendingString:@"/"]]) {
         if (orig_addItemToFavoritedLinks) ((void(*)(id,SEL,id))orig_addItemToFavoritedLinks)(self, _cmd, item);
         return;
     }
     NSLog(@"[FavoritesFix] blocked add favorite for %@", path);
-    // Don't add unwanted favorites
     return;
 }
 
 static id hook_tempDirectory(id self, SEL _cmd) {
-    NSString *tmp = [FPVirtualRoot() stringByAppendingPathComponent:@"tmp"];
+    NSString *keep = FPVirtualRoot();
+    if (!keep.length) return orig_tempDirectory ? ((id(*)(id,SEL))orig_tempDirectory)(self, _cmd) : nil;
+    NSString *tmp = [keep stringByAppendingPathComponent:@"tmp"];
     [[NSFileManager defaultManager] createDirectoryAtPath:tmp
                               withIntermediateDirectories:YES
                                                attributes:@{NSFilePosixPermissions:@0755}
@@ -132,7 +128,9 @@ static id hook_tempDirectory(id self, SEL _cmd) {
 }
 
 static id hook_downloadDirectory(id self, SEL _cmd) {
-    NSString *dl = [FPVirtualRoot() stringByAppendingPathComponent:@"Downloads"];
+    NSString *keep = FPVirtualRoot();
+    if (!keep.length) return orig_downloadDirectory ? ((id(*)(id,SEL))orig_downloadDirectory)(self, _cmd) : nil;
+    NSString *dl = [keep stringByAppendingPathComponent:@"Downloads"];
     [[NSFileManager defaultManager] createDirectoryAtPath:dl
                               withIntermediateDirectories:YES
                                                attributes:@{NSFilePosixPermissions:@0755}
@@ -141,7 +139,9 @@ static id hook_downloadDirectory(id self, SEL _cmd) {
 }
 
 static id hook_uploaderPath(id self, SEL _cmd) {
-    NSString *up = [FPVirtualRoot() stringByAppendingPathComponent:@"tmp"];
+    NSString *keep = FPVirtualRoot();
+    if (!keep.length) return orig_uploaderPath ? ((id(*)(id,SEL))orig_uploaderPath)(self, _cmd) : nil;
+    NSString *up = [keep stringByAppendingPathComponent:@"tmp"];
     [[NSFileManager defaultManager] createDirectoryAtPath:up
                               withIntermediateDirectories:YES
                                                attributes:@{NSFilePosixPermissions:@0755}
