@@ -53,14 +53,13 @@ rename/mkdir/搜索/非 lease 复制删除在真机逐项验证(FEATURE_MATRIX �
 新增 Core/FSCapabilities(纯新增,零侵入);启动时探测并 NSLog 快照。
 提交粒度:①加文件 ②接 constructor ③文档。
 
-### Phase 4 — RootHelper 补熔断(最高优先级代码变更)
-新增 Compatibility/RootHelperBlocker,hook 5 个降级 selector:
-- `_execRootShell:chdir:` / `_execRootShell:args:chdir:` / `_execRootShellWithOutput:args:chdir:maxOutLen:` → 返 nil/错误,不走 TGSystem;
-- `forkRootShell:chdir:` → 返 -1(封 forkpty);
-- `dpkgInfo:` → 返 nil。
-同时 hook `+[TGAvailability IsShellAvailable]`/`IsDEBAvailable` → NO(UI 入口随之消失)。
-回归验证:终端入口消失;DEB 菜单消失;Archive 三件套不受影响;MCM 浏览/复制/删除正常。
-风险:低——全部是"拒绝执行",无状态副作用。
+### Phase 4 — RootHelper 补熔断(最高优先级代码变更)✅ 已实现(待 CI 编译 + 真机回归)
+`RootHelperBlocker.m`(独立 constructor,仿 StartupProgressController 模式):
+- 熔断 5 个降级 selector:`_execRootShell:chdir:`、`_execRootShell:args:chdir:`、`_execRootShellWithOutput:args:chdir:maxOutLen:`、`forkRootShell:chdir:`、`dpkgInfo:`(binary 已确认全部为 TGRootFileManager 实例方法);
+- stub 按运行时 method_getTypeEncoding 返回类型路由:@→nil、v→空、B/c→NO、数值→-1(spawn 语义失败,与既有 spawnRoot:args:pid: 一致);
+- `+[TGAvailability IsShellAvailable]`/`IsDEBAvailable` → NO(反汇编确认均为 access() 探测返回 BOOL),终端/DEB UI 入口随之消失。
+Makefile _FILES 增加 RootHelperBlocker.m。
+回归验证清单:终端入口消失;DEB 菜单消失;Archive 三件套不受影响;MCM 浏览/复制/删除正常;启动无 [RootHelperBlocker] missing 日志。
 
 ### Phase 5 — Root-only UI pruning
 依 ROOT_ONLY_UI_MAP 处理方式列隐藏:Apps Manager 卸载/uicache/清数据按钮置灰或移除;属性页 chown/SetUID/SetGID 只读化;服务器开关隐藏。
