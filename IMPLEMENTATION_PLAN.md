@@ -68,8 +68,9 @@ Makefile _FILES 增加 RootHelperBlocker.m。
 实现优先用 capability 判定(FSFeatureRegistry),避免散落 if。
 回归:普通属性查看、Apps Manager 浏览不受影响。
 
-### Phase 6 — 文件操作兼容(FSAccessManager)
-统一入口判定:目标路径 ∈ 自身沙盒 ∨ 虚拟根 ∨ active lease → userspace 放行;否则清晰报错(不再静默回落死通道)。
+### Phase 6 — 文件操作兼容(FSAccessManager)✅ 已实现(Access/FSAccessManager,CI 通过)
+FSAccessCanManagePath = active lease ∨ 自身沙盒;5 处文件操作判定全部换用。网络路径仍回落原生(保 SFTP/FTP/WebDAV/SMB)。压缩/解压/编辑器保存不加重复门禁(OS EACCES 已清晰报错)。
+原计划::目标路径 ∈ 自身沙盒 ∨ 虚拟根 ∨ active lease → userspace 放行;否则清晰报错(不再静默回落死通道)。
 覆盖 read/write/create/delete/rename/copy/move/mkdir/extract/compress/editor save。
 重点修复 FEATURE_MATRIX ⚠️ 项:非 lease 路径复制/删除的明确失败提示;跨容器 rename/mkdir 行为按 Phase 2 结论处理。
 回归:容器内粘贴/删除/归档、沙盒内常规操作、错误路径提示文案。
