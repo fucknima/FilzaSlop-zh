@@ -42,7 +42,6 @@ static NSArray *FPFilteredFavorites(NSArray *orig) {
 #pragma mark - TGPreferences hooks
 
 static IMP orig_favoritedLinks = NULL;
-static IMP orig_addItemToFavoritedLinks = NULL;
 static IMP orig_tempDirectory = NULL;
 static IMP orig_downloadDirectory = NULL;
 static IMP orig_uploaderPath = NULL;
@@ -52,27 +51,8 @@ static id hook_favoritedLinks(id self, SEL _cmd) {
     return FPFilteredFavorites(orig);
 }
 
-static void hook_addItemToFavoritedLinks(id self, SEL _cmd, id item) {
-    NSString *keep = FPVirtualRoot();
-    if (!keep.length) {
-        if (orig_addItemToFavoritedLinks) ((void(*)(id,SEL,id))orig_addItemToFavoritedLinks)(self, _cmd, item);
-        return;
-    }
-    NSString *path = nil;
-    @try {
-        if ([item isKindOfClass:NSString.class]) path = item;
-        else if ([item respondsToSelector:NSSelectorFromString(@"filePath")])
-            path = [item performSelector:NSSelectorFromString(@"filePath")];
-    } @catch (__unused NSException *e) {}
-    // 只放行虚拟根，其余（Documents/Applications/[Root]/脚本等）一律不加入收藏
-    if (path && [path isEqualToString:keep]) {
-        NSLog(@"[FavoritesFix] allowing add Device Storage %@", path);
-        if (orig_addItemToFavoritedLinks) ((void(*)(id,SEL,id))orig_addItemToFavoritedLinks)(self, _cmd, item);
-        return;
-    }
-    NSLog(@"[FavoritesFix] blocked add favorite for %@", path);
-    return;
-}
+// addItemToFavoritedLinks: 不 hook —— 让 Filza 原生添加/删除收藏完全正常，
+// 用户在 Device Storage 里点收藏即可加入；favoritedLinks getter 负责只显示它。
 
 static id hook_tempDirectory(id self, SEL _cmd) {
     NSString *keep = FPVirtualRoot();
@@ -114,15 +94,13 @@ static void InstallFavoritesAndPathsFix(void) {
     if (prefs) {
         Method m = class_getInstanceMethod(prefs, NSSelectorFromString(@"favoritedLinks"));
         if (m) { orig_favoritedLinks = method_getImplementation(m); method_setImplementation(m, (IMP)hook_favoritedLinks); }
-        m = class_getInstanceMethod(prefs, NSSelectorFromString(@"addItemToFavoritedLinks:"));
-        if (m) { orig_addItemToFavoritedLinks = method_getImplementation(m); method_setImplementation(m, (IMP)hook_addItemToFavoritedLinks); }
         m = class_getInstanceMethod(prefs, NSSelectorFromString(@"tempDirectory"));
         if (m) { orig_tempDirectory = method_getImplementation(m); method_setImplementation(m, (IMP)hook_tempDirectory); }
         m = class_getInstanceMethod(prefs, NSSelectorFromString(@"downloadDirectory"));
         if (m) { orig_downloadDirectory = method_getImplementation(m); method_setImplementation(m, (IMP)hook_downloadDirectory); }
         m = class_getInstanceMethod(prefs, NSSelectorFromString(@"uploaderPath"));
         if (m) { orig_uploaderPath = method_getImplementation(m); method_setImplementation(m, (IMP)hook_uploaderPath); }
-        NSLog(@"[FavoritesFix] hooked TGPreferences favorites/temp/download/uploader");
+        NSLog(@"[FavoritesFix] hooked TGPreferences favoritedLinks/temp/download/uploader (addItem untouched)");
     }
     NSLog(@"[FavoritesFix] installed");
 }
