@@ -92,7 +92,7 @@ WebDAV server 决策:默认隐藏;如需保留,评估 app 内 spawn helpers/Filz
 ### Phase 10 — Device Storage UX cleanup
 目录命名中文化梳理(应用数据/App Groups/…)、Experimental 折叠、空目录清理策略复核(MCMPruneEmptyGeneratedDirectory 不误删用户目录)。
 
-### Phase 11 — Legacy source cleanup
+### Phase 11 — Legacy source cleanup ✅ 源码部分已实现(CI 通过)
 git mv 至 Legacy/:kexploit/ kpf/ XPF/ sandbox_escape.* apfs_own.* utils/ compat/;
 同步删 Makefile:27 的 `-I$(PWD)/compat -I$(PWD)/XPF/src -I$(PWD)/XPF/external/ChOma/include`;
 评估 IPA 内剔除 bins/ 与 helpers/FilzaHelper(终端已隐藏后无消费方;FilzaWebDAVServer 视 Phase 8 决策)。
