@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "MCMFilzaIntegration.h"
+#include "Access/FSAccessManager.h"
 #include "PosterBoardFeature.h"
 #include "ArchiveUnzipFix.h"
 #include "Vendor/minizip/FSMinizipZip.h"
@@ -865,7 +866,7 @@ static BOOL fileItemsUseMCMOperations(NSArray *items) {
     if (items.count == 0) return NO;
     for (id item in items) {
         NSString *path = fileItemPath(item);
-        if (!path.length || !MCMFilzaPathHasActiveLease(path)) return NO;
+        if (!path.length || !FSAccessCanManagePath(path)) return NO;
     }
     return YES;
 }
@@ -974,7 +975,7 @@ static void archiveSelectedItems(id controller, NSArray *indexPaths) {
         if (!directoryError) for (id item in capturedItems) {
             NSString *source = fileItemPath(item);
             NSError *error = nil;
-            if (!source.length || !MCMFilzaPathHasActiveLease(source)) {
+            if (!source.length || !FSAccessCanManagePath(source)) {
                 setPastePOSIXError(&error, EACCES, @"archive",
                                    source ?: @"(unknown)");
             } else if (pathIsInsideArchive(source)) {
@@ -1065,7 +1066,7 @@ static NSUInteger hook_fileSystemPageDeleteAction(id self, SEL _cmd) {
     SEL selector = NSSelectorFromString(@"currentPath");
     NSString *path = [self respondsToSelector:selector]
         ? ((id(*)(id, SEL))objc_msgSend)(self, selector) : nil;
-    if (MCMFilzaPathHasActiveLease(path)) return 0x8000;
+    if (FSAccessCanManagePath(path)) return 0x8000;
     return orig_fileSystemPageDeleteAction
         ? ((NSUInteger(*)(id, SEL))orig_fileSystemPageDeleteAction)(self, _cmd)
         : 0x8000;
@@ -1143,7 +1144,7 @@ static void performPermanentDelete(id self, NSArray *indexPaths,
     for (id item in items) {
         NSString *path = fileItemPath(item);
         NSError *error = nil;
-        if (!path.length || !MCMFilzaPathHasActiveLease(path)) {
+        if (!path.length || !FSAccessCanManagePath(path)) {
             setPastePOSIXError(&error, EACCES, @"delete", path ?: @"(unknown)");
         } else if ([NSFileManager.defaultManager removeItemAtPath:path error:&error]) {
             MCMFilzaRecordDeletedGeneratedPath(path);
@@ -1233,7 +1234,7 @@ static void hook_copyFilesAndDirectoryFromPasteboard(id self, SEL _cmd) {
         NSSelectorFromString(@"currentPath"));
     destinationDirectory = localPathFromPasteboardValue(destinationDirectory)
         ?: destinationDirectory;
-    if (!MCMFilzaPathHasActiveLease(destinationDirectory)) {
+    if (!FSAccessCanManagePath(destinationDirectory)) {
         ((void(*)(id, SEL))orig_copyFilesAndDirectoryFromPasteboard)(self, _cmd);
         return;
     }
