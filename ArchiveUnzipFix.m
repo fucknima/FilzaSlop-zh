@@ -187,7 +187,7 @@ static int (*pFSUnzReadCurrentFile)(FSUnzFile, void *, unsigned);
 static int (*pFSUnzCloseCurrentFile)(FSUnzFile);
 static int (*pFSUnzClose)(FSUnzFile);
 
-static BOOL FSLoadInProcessUnzip(void)
+BOOL FSLoadInProcessUnzip(void)
 {
     static BOOL available = NO;
     static dispatch_once_t onceToken;

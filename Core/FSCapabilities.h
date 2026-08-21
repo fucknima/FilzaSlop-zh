@@ -1,0 +1,14 @@
+#import <Foundation/Foundation.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+FOUNDATION_EXPORT BOOL FSCapNormalFilesystem(void);
+FOUNDATION_EXPORT BOOL FSCapArchive(void);
+FOUNDATION_EXPORT BOOL FSCapNetwork(void);
+FOUNDATION_EXPORT BOOL FSCapMCMContainers(void);
+FOUNDATION_EXPORT BOOL FSCapRootHelper(void);
+FOUNDATION_EXPORT BOOL FSCapRootShell(void);
+FOUNDATION_EXPORT BOOL FSCapPackageManager(void);
+FOUNDATION_EXPORT BOOL FSCapSystemModification(void);
+
+NS_ASSUME_NONNULL_END

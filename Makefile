@@ -21,6 +21,7 @@ UNRAR_SOURCES = $(addprefix $(UNRAR_DIR)/, \
 FilzaApplySandboxExt_FILES = Tweak.m MCMBridge.m MCMFilzaIntegration.m \
     PosterBoardFeature.m TGFocusedInputResponderTimingFix.m \
     StartupProgressController.m ArchiveUnzipFix.m RootHelperBlocker.m \
+    Core/FSCapabilities.m \
     Vendor/minizip/FSMinizipZip.c $(UNRAR_SOURCES)
 
 # --- Flags ---
