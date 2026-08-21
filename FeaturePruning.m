@@ -1,6 +1,7 @@
 #include "FSLog.h"
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <unistd.h>
 #import <objc/runtime.h>
 
 @interface TGMenuManagerItem : NSObject
@@ -203,6 +204,100 @@ static void FPInstallPreferencesHooks(void)
     }
 }
 
+#pragma mark - runtime directory getters + settings items scrub
+
+static IMP origTempDirectoryGetter;
+static IMP origDownloadDirectoryGetter;
+
+static NSString *FP_safeTempDirectory(id self, SEL _cmd)
+{
+    return NSTemporaryDirectory();
+}
+
+static NSString *FP_safeDownloadDirectory(id self, SEL _cmd)
+{
+    return FPRedirectedDownloadDirectory();
+}
+
+static BOOL FPIsAirRow(NSDictionary *row)
+{
+    NSString *selector = row[@"selector"];
+    if ([selector isKindOfClass:[NSString class]] && [selector containsString:@"AirBrowser"])
+        return YES;
+    for (NSString *key in @[@"key", @"identifier"]) {
+        NSString *value = row[key];
+        if ([value isKindOfClass:[NSString class]] && [value hasPrefix:@"air-"])
+            return YES;
+    }
+    return NO;
+}
+
+static id FPScrubAir(id obj)
+{
+    if ([obj isKindOfClass:[NSArray class]]) {
+        NSMutableArray *result = [NSMutableArray array];
+        for (id element in obj) {
+            if ([element isKindOfClass:[NSDictionary class]] && FPIsAirRow(element)) continue;
+            id cleaned = FPScrubAir(element);
+            [result addObject:cleaned ?: [NSNull null]];
+        }
+        return result;
+    }
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *result = [NSMutableDictionary dictionary];
+        for (id key in obj) {
+            if ([key isKindOfClass:[NSString class]] && [key hasPrefix:@"air-"]) continue;
+            id value = obj[key];
+            if ([value isKindOfClass:[NSDictionary class]] && FPIsAirRow(value)) continue;
+            id cleaned = FPScrubAir(value);
+            result[key] = cleaned ?: [NSNull null];
+        }
+        return result;
+    }
+    return obj;
+}
+
+static IMP origSetItems;
+
+static void FP_setItems(id self, SEL _cmd, id items)
+{
+    ((void(*)(id, SEL, id))origSetItems)(self, _cmd, FPScrubAir(items));
+}
+
+static void FPInstallRuntimeFixes(void)
+{
+    Class prefsClass = NSClassFromString(@"TGPreferences");
+    Method tempMethod = class_getInstanceMethod(prefsClass, sel_registerName("tempDirectory"));
+    if (tempMethod) {
+        origTempDirectoryGetter = method_getImplementation(tempMethod);
+        method_setImplementation(tempMethod, (IMP)FP_safeTempDirectory);
+    }
+    Method downloadMethod = class_getInstanceMethod(prefsClass, sel_registerName("downloadDirectory"));
+    if (downloadMethod) {
+        origDownloadDirectoryGetter = method_getImplementation(downloadMethod);
+        method_setImplementation(downloadMethod, (IMP)FP_safeDownloadDirectory);
+    }
+
+    Class settingsClass = NSClassFromString(@"TGPreferencesTableViewController");
+    Method setItemsMethod = class_getInstanceMethod(settingsClass, sel_registerName("setItems:"));
+    if (setItemsMethod) {
+        origSetItems = method_getImplementation(setItemsMethod);
+        method_setImplementation(setItemsMethod, (IMP)FP_setItems);
+    }
+
+    // belt and suspenders: stored defaults may still hold unwritable paths
+    void (^ensureWritable)(NSString *, NSString *) = ^(NSString *key, NSString *replacement) {
+        NSString *current = [NSUserDefaults.standardUserDefaults objectForKey:key];
+        if (![current isKindOfClass:[NSString class]] || !current.length) return;
+        [[NSFileManager defaultManager] createDirectoryAtPath:current
+                                  withIntermediateDirectories:YES attributes:nil error:nil];
+        if (access(current.fileSystemRepresentation, W_OK) == 0) return;
+        [NSUserDefaults.standardUserDefaults setObject:replacement forKey:key];
+    };
+    ensureWritable(@"temp-directory", NSTemporaryDirectory());
+    ensureWritable(@"download-directory", FPRedirectedDownloadDirectory());
+}
+
 __attribute__((constructor)) static void FeaturePruningInit(void)
 {
     Class pageClass = NSClassFromString(@"TGPageViewController");
@@ -219,6 +314,7 @@ __attribute__((constructor)) static void FeaturePruningInit(void)
               (IMP)FPFilterCustomMenuApps, &origAppsCustomMenu);
 
     FPInstallPreferencesHooks();
+    FPInstallRuntimeFixes();
 
     FSLog(@"[FeaturePruning] root-only menu pruning installed");
 }
