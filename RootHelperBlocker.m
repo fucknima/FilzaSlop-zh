@@ -24,7 +24,7 @@ static void RHBReplaceInstance(Class cls, const char *selName) {
     SEL sel = NSSelectorFromString(selName);
     Method m = class_getInstanceMethod(cls, sel);
     if (!m) {
-        NSLog(@"[RootHelperBlocker] missing instance method %@ on %@", selName, cls);
+        NSLog(@"[RootHelperBlocker] missing instance method %s on %@", selName, cls);
         return;
     }
     method_setImplementation(m, RHBPickImp(m));
@@ -34,7 +34,7 @@ static void RHBReplaceClassMethod(Class cls, const char *selName) {
     SEL sel = NSSelectorFromString(selName);
     Method m = class_getClassMethod(cls, sel);
     if (!m) {
-        NSLog(@"[RootHelperBlocker] missing class method %@ on %@", selName, cls);
+        NSLog(@"[RootHelperBlocker] missing class method %s on %@", selName, cls);
         return;
     }
     method_setImplementation(m, (IMP)rhbNoStub);
