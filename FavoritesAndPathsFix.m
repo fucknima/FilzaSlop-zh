@@ -12,37 +12,8 @@ static NSString *FPVirtualRoot(void) {
     return root.length ? root : nil;
 }
 
-// 构造一个指向虚拟根的完整 FileItem（用于收藏夹为空时补上）
-static id FPCreateDeviceStorageItem(void) {
-    NSString *root = FPVirtualRoot();
-    if (!root.length) return nil;
-    Class FI = NSClassFromString(@"FileItem");
-    if (!FI) return root;
-    id item = [[FI alloc] init];
-    @try {
-        if ([item respondsToSelector:NSSelectorFromString(@"setFilePath:")]) {
-            ((void(*)(id,SEL,id))objc_msgSend)(item, NSSelectorFromString(@"setFilePath:"), root);
-        } else if ([item respondsToSelector:NSSelectorFromString(@"setFilePath:attribute:")]) {
-            ((void(*)(id,SEL,id,id))objc_msgSend)(item, NSSelectorFromString(@"setFilePath:attribute:"), root, nil);
-        }
-        if ([item respondsToSelector:NSSelectorFromString(@"setAFileName:")]) {
-            ((void(*)(id,SEL,id))objc_msgSend)(item, NSSelectorFromString(@"setAFileName:"), @"设备存储");
-        }
-        NSString *p = nil;
-        @try { p = [item performSelector:NSSelectorFromString(@"filePath")]; } @catch (__unused NSException *e) {}
-        if (![p isEqualToString:root]) {
-            if ([item respondsToSelector:NSSelectorFromString(@"setFilePath:attribute:")]) {
-                ((void(*)(id,SEL,id,id))objc_msgSend)(item, NSSelectorFromString(@"setFilePath:attribute:"), root, nil);
-            }
-        }
-        NSLog(@"[FavoritesFix] created Device Storage item for %@", root);
-        return item;
-    } @catch (__unused NSException *e) {
-        NSLog(@"[FavoritesFix] create item failed %@", e);
-        return root;
-    }
-}
-
+// 收藏夹过滤：只保留能进入虚拟根的条目，绝不合成新 FileItem（合成必然闪退）。
+// 虚拟根不在原收藏里时返回空数组——宁可空也不崩。
 static NSArray *FPFilteredFavorites(NSArray *orig) {
     NSString *keep = FPVirtualRoot();
     if (!keep.length) return orig;
@@ -54,21 +25,15 @@ static NSArray *FPFilteredFavorites(NSArray *orig) {
             else if ([obj respondsToSelector:NSSelectorFromString(@"filePath")]) {
                 @try { path = [obj performSelector:NSSelectorFromString(@"filePath")]; } @catch (__unused NSException *e) {}
             }
-            if (path && [path isEqualToString:keep]) {
-                @try {
-                    if ([obj respondsToSelector:NSSelectorFromString(@"setAFileName:")])
-                        ((void(*)(id,SEL,id))objc_msgSend)(obj, NSSelectorFromString(@"setAFileName:"), @"设备存储");
-                } @catch (__unused NSException *e) {}
+            if (!path) continue;
+            // 只保留精确等于虚拟根的条目，其他全滤掉
+            if ([path isEqualToString:keep]) {
                 [filtered addObject:obj];
                 NSLog(@"[FavoritesFix] kept virtual root %@", path);
             } else {
-                if (path) NSLog(@"[FavoritesFix] filtered out %@", path);
+                NSLog(@"[FavoritesFix] filtered out %@", path);
             }
         }
-    }
-    if (filtered.count == 0) {
-        id item = FPCreateDeviceStorageItem();
-        if (item) [filtered addObject:item];
     }
     NSLog(@"[FavoritesFix] favoritedLinks filtered -> %lu", (unsigned long)filtered.count);
     return filtered;
@@ -99,16 +64,9 @@ static void hook_addItemToFavoritedLinks(id self, SEL _cmd, id item) {
         else if ([item respondsToSelector:NSSelectorFromString(@"filePath")])
             path = [item performSelector:NSSelectorFromString(@"filePath")];
     } @catch (__unused NSException *e) {}
-    if ([path isEqualToString:keep]) {
+    // 只放行虚拟根，其余（Documents/Applications/[Root]/脚本等）一律不加入收藏
+    if (path && [path isEqualToString:keep]) {
         NSLog(@"[FavoritesFix] allowing add Device Storage %@", path);
-        @try {
-            if ([item respondsToSelector:NSSelectorFromString(@"setAFileName:")])
-                ((void(*)(id,SEL,id))objc_msgSend)(item, NSSelectorFromString(@"setAFileName:"), @"设备存储");
-        } @catch (__unused NSException *e) {}
-        if (orig_addItemToFavoritedLinks) ((void(*)(id,SEL,id))orig_addItemToFavoritedLinks)(self, _cmd, item);
-        return;
-    }
-    if (path && [path hasPrefix:[keep stringByAppendingString:@"/"]]) {
         if (orig_addItemToFavoritedLinks) ((void(*)(id,SEL,id))orig_addItemToFavoritedLinks)(self, _cmd, item);
         return;
     }
