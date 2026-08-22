@@ -283,7 +283,7 @@ static NSArray<NSString *> *FPBlockedSidebarMarkers(void)
     static NSArray *markers;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        markers = @[@"music://", @"apps://", @"mountpoints://", @"Filza/Trash", @"Filza/scripts"];
+        markers = @[@"music://", @"apps://", @"mountpoints://", @"Filza/.Trash", @"Filza/scripts"];
     });
     return markers;
 }
@@ -400,9 +400,23 @@ static void FP_favoritesSetSystem(id self, SEL _cmd, id system)
 static IMP origFavViewDidLoad;
 static BOOL loggedFavoritesState = NO;
 
+static void FPSanitizeFavoritesSystem(FavoritesTableViewController *favorites)
+{
+    NSArray *system = favorites.system;
+    if (![system isKindOfClass:[NSArray class]]) return;
+    for (id element in system) {
+        if ([element isKindOfClass:[NSDictionary class]] && FPDictIsBlockedSidebarItem(element)) {
+            favorites.system = FPScrubSidebar(system);
+            FSLog(@"[FeaturePruning] favorites system entries filtered");
+            return;
+        }
+    }
+}
+
 static void FP_favoritesViewDidLoad(id self, SEL _cmd)
 {
     ((void(*)(id, SEL))origFavViewDidLoad)(self, _cmd);
+    FPSanitizeFavoritesSystem((FavoritesTableViewController *)self);
     if (loggedFavoritesState) return;
     loggedFavoritesState = YES;
     FavoritesTableViewController *favorites = (FavoritesTableViewController *)self;
@@ -432,6 +446,39 @@ static void FP_sftpConnect(id self, SEL _cmd, id successBlock, id failureBlock)
             ((void(*)(id, SEL))objc_msgSend)(self, disconnectSel);
     }
     ((void(*)(id, SEL, id, id))origSftpConnect)(self, _cmd, successBlock, failureBlock);
+}
+
+#pragma mark - remote download temp redirection
+
+// CloudPageViewController downloads remote files to a caller-provided local
+// directory before preview/edit; that directory comes from outside the
+// sandbox ("Local file is not writable"). Redirect it into our container.
+static IMP origDownloadItemsToTemp;
+static BOOL loggedTempRedirect = NO;
+
+static NSString *FPSafeRemoteDownloadDir(void)
+{
+    NSString *target = [NSTemporaryDirectory() stringByAppendingPathComponent:@"RemotePreview"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:target
+                              withIntermediateDirectories:YES attributes:nil error:nil];
+    return target;
+}
+
+static void FP_downloadItemsToTemp(id self, SEL _cmd, id directory, id title, id completion)
+{
+    if ([directory isKindOfClass:[NSString class]] &&
+        ![directory hasPrefix:NSHomeDirectory()]) {
+        if (!loggedTempRedirect) {
+            loggedTempRedirect = YES;
+            FSLog(@"[FeaturePruning] remote download temp redirected %@ -> %@",
+                  directory, FPSafeRemoteDownloadDir());
+        }
+        ((void(*)(id, SEL, id, id, id))origDownloadItemsToTemp)(
+            self, _cmd, FPSafeRemoteDownloadDir(), title, completion);
+        return;
+    }
+    ((void(*)(id, SEL, id, id, id))origDownloadItemsToTemp)(
+        self, _cmd, directory, title, completion);
 }
 
 static IMP origTitleForHeader;
@@ -514,6 +561,16 @@ static void FPInstallRuntimeFixes(void)
         method_setImplementation(sftpConnectMethod, (IMP)FP_sftpConnect);
     } else {
         FSLog(@"[FeaturePruning] DLSFTPConnection.connectWithSuccessBlock: missing");
+    }
+
+    Class cloudPageClass = NSClassFromString(@"CloudPageViewController");
+    Method tempDirMethod = class_getInstanceMethod(cloudPageClass,
+        sel_registerName("downloadItemsToTempDirectory:title:completion:"));
+    if (tempDirMethod) {
+        origDownloadItemsToTemp = method_getImplementation(tempDirMethod);
+        method_setImplementation(tempDirMethod, (IMP)FP_downloadItemsToTemp);
+    } else {
+        FSLog(@"[FeaturePruning] CloudPageViewController.downloadItemsToTempDirectory: missing");
     }
 
     // the WEBDAV 服务 section is hardcoded; hide it at table-data level
