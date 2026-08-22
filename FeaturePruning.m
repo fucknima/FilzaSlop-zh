@@ -298,16 +298,10 @@ static NSInteger FP_numberOfRows(id self, SEL _cmd, UITableView *tableView, NSIn
         self, _cmd, tableView, section);
 }
 
-static IMP origStartSFTPSession;
-
-static void FP_sftpStartSession(id self, SEL _cmd)
-{
-    id session = ((id(*)(id, SEL))objc_msgSend)(self, sel_registerName("session"));
-    FSLog(@"[FeaturePruning] startSFTPSession session=%@ -> %@",
-          session ?: @"nil", session ? @"skip" : @"start");
-    if (session) return;   // redundant re-start raises 'Already connected'
-    ((void(*)(id, SEL))origStartSFTPSession)(self, _cmd);
-}
+// NOTE: do NOT hook -[DLSFTPConnection startSFTPSession]. Reading its session
+// getter during connectToAddressAtIndex crashes (SEGV messaging a half-built
+// object, confirmed by .ips 2026-08-22). 'Already connected' needs a different
+// fix: see IMPLEMENTATION_PLAN.md Phase 8 follow-up.
 
 static void FPInstallRuntimeFixes(void)
 {
@@ -341,17 +335,6 @@ static void FPInstallRuntimeFixes(void)
         origNumberOfRows = method_getImplementation(rowsMethod);
         method_setImplementation(titleMethod, (IMP)FP_titleForHeader);
         method_setImplementation(rowsMethod, (IMP)FP_numberOfRows);
-    }
-
-    // DLSFTPConnection raises 'Already connected' when a second op re-runs
-    // startSFTPSession on a live session; skip the redundant start instead
-    Class sftpClass = NSClassFromString(@"DLSFTPConnection");
-    Method sftpStart = class_getInstanceMethod(sftpClass, sel_registerName("startSFTPSession"));
-    if (sftpStart) {
-        origStartSFTPSession = method_getImplementation(sftpStart);
-        method_setImplementation(sftpStart, (IMP)FP_sftpStartSession);
-    } else {
-        FSLog(@"[FeaturePruning] DLSFTPConnection not found");
     }
 
     // POSIX access() lies here: /var/tmp is world-writable but the seatbelt
