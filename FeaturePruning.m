@@ -274,6 +274,80 @@ static void FP_setItems(id self, SEL _cmd, id items)
     ((void(*)(id, SEL, id))origSetItems)(self, _cmd, FPScrubAir(items));
 }
 
+#pragma mark - left panel fixed entries
+
+// 音乐库/回收站/App 管理器/Scripts/挂载点 are jailbreak-era shortcuts; identify
+// them by their destination markers instead of localized titles.
+static NSArray<NSString *> *FPBlockedSidebarMarkers(void)
+{
+    static NSArray *markers;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        markers = @[@"music://", @"apps://", @"mountpoints://", @"Filza/Trash", @"Filza/scripts"];
+    });
+    return markers;
+}
+
+static BOOL FPValueHasSidebarMarker(id value)
+{
+    if (![value isKindOfClass:[NSString class]]) return NO;
+    for (NSString *marker in FPBlockedSidebarMarkers())
+        if ([value containsString:marker]) return YES;
+    return NO;
+}
+
+static BOOL FPDictIsBlockedSidebarItem(NSDictionary *dict)
+{
+    __block BOOL blocked = NO;
+    [dict enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+        if (FPValueHasSidebarMarker(value) && ![value isKindOfClass:[NSArray class]] &&
+            ![value isKindOfClass:[NSDictionary class]]) {
+            blocked = YES;
+            *stop = YES;
+        }
+    }];
+    return blocked;
+}
+
+static id FPScrubSidebar(id obj)
+{
+    if ([obj isKindOfClass:[NSArray class]]) {
+        NSMutableArray *result = [NSMutableArray array];
+        for (id element in obj) {
+            if ([element isKindOfClass:[NSDictionary class]] && FPDictIsBlockedSidebarItem(element))
+                continue;
+            if (![element isKindOfClass:[NSArray class]] && ![element isKindOfClass:[NSDictionary class]] &&
+                FPValueHasSidebarMarker([element isKindOfClass:[NSString class]]
+                                            ? element
+                                            : [element description]))
+                continue;
+            id cleaned = FPScrubSidebar(element);
+            [result addObject:cleaned ?: [NSNull null]];
+        }
+        return result;
+    }
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *result = [NSMutableDictionary dictionary];
+        for (id key in obj) {
+            id value = obj[key];
+            if (![value isKindOfClass:[NSArray class]] && ![value isKindOfClass:[NSDictionary class]] &&
+                FPValueHasSidebarMarker(value))
+                continue;
+            id cleaned = FPScrubSidebar(value);
+            result[key] = cleaned ?: [NSNull null];
+        }
+        return result;
+    }
+    return obj;
+}
+
+static IMP origSetSections;
+
+static void FP_setSections(id self, SEL _cmd, id sections)
+{
+    ((void(*)(id, SEL, id))origSetSections)(self, _cmd, FPScrubSidebar(sections));
+}
+
 static IMP origTitleForHeader;
 static IMP origNumberOfRows;
 
@@ -298,10 +372,58 @@ static NSInteger FP_numberOfRows(id self, SEL _cmd, UITableView *tableView, NSIn
         self, _cmd, tableView, section);
 }
 
-// NOTE: do NOT hook -[DLSFTPConnection startSFTPSession]. Reading its session
-// getter during connectToAddressAtIndex crashes (SEGV messaging a half-built
-// object, confirmed by .ips 2026-08-22). 'Already connected' needs a different
-// fix: see IMPLEMENTATION_PLAN.md Phase 8 follow-up.
+// NOTE: never message DLSFTPConnection internals here — reading its session
+// getter during connectToAddressAtIndex SEGVs on a half-built object (.ips
+// 2026-08-22). Track started connections in a side table keyed by pointer
+// instead, and clear on every teardown path.
+
+static NSMapTable *FPSftpStartedConnections;
+static IMP origStartSFTPSession;
+static IMP origSftpDisconnect;
+static IMP origSftpDisconnectSession;
+static IMP origSftpShutdown;
+static IMP origSftpDisconnectedWithReason;
+
+static void FPSftpStartSession(id self, SEL _cmd)
+{
+    if (!FPSftpStartedConnections)
+        FPSftpStartedConnections = [NSMapTable weakToStrongObjectsMapTable];
+    @synchronized (FPSftpStartedConnections) {
+        if ([FPSftpStartedConnections objectForKey:self]) {
+            FSLog(@"[FeaturePruning] startSFTPSession skipped (already started)");
+            return;   // second start raises 'Already connected' and kills the op
+        }
+        [FPSftpStartedConnections setObject:@YES forKey:self];
+    }
+    ((void(*)(id, SEL))origStartSFTPSession)(self, _cmd);
+}
+
+static void FPSftpTeardown(id self, IMP orig)
+{
+    if (FPSftpStartedConnections) {
+        @synchronized (FPSftpStartedConnections) {
+            [FPSftpStartedConnections removeObjectForKey:self];
+        }
+    }
+    ((void(*)(id, SEL))orig)(self, _cmd);
+}
+
+static void FPSftpDisconnect(id self, SEL _cmd)
+{
+    FPSftpTeardown(self, origSftpDisconnect);
+}
+static void FPSftpDisconnectSession(id self, SEL _cmd)
+{
+    FPSftpTeardown(self, origSftpDisconnectSession);
+}
+static void FPSftpShutdown(id self, SEL _cmd)
+{
+    FPSftpTeardown(self, origSftpShutdown);
+}
+static void FPSftpDisconnectedWithReason(id self, SEL _cmd, id reason, id message)
+{
+    FPSftpTeardown(self, origSftpDisconnectedWithReason);
+}
 
 static void FPInstallRuntimeFixes(void)
 {
@@ -324,6 +446,15 @@ static void FPInstallRuntimeFixes(void)
         method_setImplementation(setItemsMethod, (IMP)FP_setItems);
     }
 
+    Class leftPanelClass = NSClassFromString(@"LeftPanelTableViewController");
+    Method setSectionsMethod = class_getInstanceMethod(leftPanelClass, sel_registerName("setSections:"));
+    if (setSectionsMethod) {
+        origSetSections = method_getImplementation(setSectionsMethod);
+        method_setImplementation(setSectionsMethod, (IMP)FP_setSections);
+    } else {
+        FSLog(@"[FeaturePruning] LeftPanelTableViewController.setSections: missing");
+    }
+
     // the WEBDAV 服务 section is hardcoded; hide it at table-data level
     Class tableClass = settingsClass;
     Method titleMethod = class_getInstanceMethod(tableClass,
@@ -335,6 +466,24 @@ static void FPInstallRuntimeFixes(void)
         origNumberOfRows = method_getImplementation(rowsMethod);
         method_setImplementation(titleMethod, (IMP)FP_titleForHeader);
         method_setImplementation(rowsMethod, (IMP)FP_numberOfRows);
+    }
+
+    Class sftpClass = NSClassFromString(@"DLSFTPConnection");
+    struct { const char *name; IMP *origSlot; IMP replacement; } sftpHooks[] = {
+        {"startSFTPSession", &origStartSFTPSession, (IMP)FPSftpStartSession},
+        {"_disconnect", &origSftpDisconnect, (IMP)FPSftpDisconnect},
+        {"disconnectSession", &origSftpDisconnectSession, (IMP)FPSftpDisconnectSession},
+        {"shutdownSftp", &origSftpShutdown, (IMP)FPSftpShutdown},
+        {"disconnectedWithReason:message:", &origSftpDisconnectedWithReason, (IMP)FPSftpDisconnectedWithReason},
+    };
+    for (unsigned i = 0; i < sizeof(sftpHooks) / sizeof(sftpHooks[0]); ++i) {
+        Method m = class_getInstanceMethod(sftpClass, sel_registerName(sftpHooks[i].name));
+        if (!m) {
+            FSLog(@"[FeaturePruning] DLSFTPConnection.%s missing", sftpHooks[i].name);
+            continue;
+        }
+        *sftpHooks[i].origSlot = method_getImplementation(m);
+        method_setImplementation(m, sftpHooks[i].replacement);
     }
 
     // POSIX access() lies here: /var/tmp is world-writable but the seatbelt
