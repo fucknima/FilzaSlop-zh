@@ -413,10 +413,62 @@ static void FPSanitizeFavoritesSystem(FavoritesTableViewController *favorites)
     }
 }
 
+// fresh installs seed Documents(/var/mobile/Documents), Applications
+// (/Applications) and [Root](/) — none of them reachable jailed.
+static BOOL FPIsDefaultLink(NSDictionary *link)
+{
+    NSString *path = link[@"path"];
+    if (![path isKindOfClass:[NSString class]]) return NO;
+    return ([path isEqualToString:@"/var/mobile/Documents"] ||
+            [path isEqualToString:@"/Applications"] ||
+            [path isEqualToString:@"/"]);
+}
+
+static void FPSanitizeFavoritesLinks(FavoritesTableViewController *favorites)
+{
+    NSArray *links = favorites.links;
+    if (![links isKindOfClass:[NSArray class]]) return;
+    for (id element in links) {
+        if ([element isKindOfClass:[NSDictionary class]] && FPIsDefaultLink(element)) {
+            NSMutableArray *kept = [NSMutableArray array];
+            for (id item in links) {
+                if ([item isKindOfClass:[NSDictionary class]] && FPIsDefaultLink(item)) continue;
+                [kept addObject:item];
+            }
+            favorites.links = kept;
+            FSLog(@"[FeaturePruning] default favorite links removed (%lu kept)",
+                  (unsigned long)kept.count);
+            return;
+        }
+    }
+}
+
+static IMP origFavSetLinks;
+
+static void FP_favoritesSetLinks(id self, SEL _cmd, id links)
+{
+    if ([links isKindOfClass:[NSArray class]]) {
+        NSMutableArray *kept = [NSMutableArray array];
+        BOOL removed = NO;
+        for (id item in links) {
+            if ([item isKindOfClass:[NSDictionary class]] && FPIsDefaultLink(item)) {
+                removed = YES;
+                continue;
+            }
+            [kept addObject:item];
+        }
+        if (removed) FSLog(@"[FeaturePruning] default favorite links removed at setLinks:");
+        ((void(*)(id, SEL, id))origFavSetLinks)(self, _cmd, kept);
+        return;
+    }
+    ((void(*)(id, SEL, id))origFavSetLinks)(self, _cmd, links);
+}
+
 static void FP_favoritesViewDidLoad(id self, SEL _cmd)
 {
     ((void(*)(id, SEL))origFavViewDidLoad)(self, _cmd);
     FPSanitizeFavoritesSystem((FavoritesTableViewController *)self);
+    FPSanitizeFavoritesLinks((FavoritesTableViewController *)self);
     if (loggedFavoritesState) return;
     loggedFavoritesState = YES;
     FavoritesTableViewController *favorites = (FavoritesTableViewController *)self;
@@ -466,15 +518,23 @@ static NSString *FPSafeRemoteDownloadDir(void)
 
 static void FP_downloadItemsToTemp(id self, SEL _cmd, id directory, id title, id completion)
 {
-    if ([directory isKindOfClass:[NSString class]] &&
-        ![directory hasPrefix:NSHomeDirectory()]) {
+    NSString *safeDir = FPSafeRemoteDownloadDir();
+    NSString *dirPath = nil;
+    BOOL isURL = NO;
+    if ([directory isKindOfClass:[NSString class]]) {
+        dirPath = (NSString *)directory;
+    } else if ([directory isKindOfClass:[NSURL class]]) {
+        dirPath = [(NSURL *)directory path];
+        isURL = YES;
+    }
+    if (dirPath.length && ![dirPath hasPrefix:NSHomeDirectory()]) {
         if (!loggedTempRedirect) {
             loggedTempRedirect = YES;
-            FSLog(@"[FeaturePruning] remote download temp redirected %@ -> %@",
-                  directory, FPSafeRemoteDownloadDir());
+            FSLog(@"[FeaturePruning] remote download temp redirected %@ -> %@", dirPath, safeDir);
         }
+        id redirected = isURL ? (id)[NSURL fileURLWithPath:safeDir] : (id)safeDir;
         ((void(*)(id, SEL, id, id, id))origDownloadItemsToTemp)(
-            self, _cmd, FPSafeRemoteDownloadDir(), title, completion);
+            self, _cmd, redirected, title, completion);
         return;
     }
     ((void(*)(id, SEL, id, id, id))origDownloadItemsToTemp)(
@@ -546,6 +606,13 @@ static void FPInstallRuntimeFixes(void)
         method_setImplementation(favSystemMethod, (IMP)FP_favoritesSetSystem);
     } else {
         FSLog(@"[FeaturePruning] FavoritesTableViewController.setSystem: missing");
+    }
+    Method favLinksMethod = class_getInstanceMethod(favoritesClass, sel_registerName("setLinks:"));
+    if (favLinksMethod) {
+        origFavSetLinks = method_getImplementation(favLinksMethod);
+        method_setImplementation(favLinksMethod, (IMP)FP_favoritesSetLinks);
+    } else {
+        FSLog(@"[FeaturePruning] FavoritesTableViewController.setLinks: missing");
     }
     Method favLoadMethod = class_getInstanceMethod(favoritesClass, sel_registerName("viewDidLoad"));
     if (favLoadMethod) {
