@@ -398,7 +398,7 @@ static void FPSftpStartSession(id self, SEL _cmd)
     ((void(*)(id, SEL))origStartSFTPSession)(self, _cmd);
 }
 
-static void FPSftpTeardown(id self, IMP orig)
+static void FPSftpTeardown(id self, SEL _cmd, IMP orig)
 {
     if (FPSftpStartedConnections) {
         @synchronized (FPSftpStartedConnections) {
@@ -410,19 +410,19 @@ static void FPSftpTeardown(id self, IMP orig)
 
 static void FPSftpDisconnect(id self, SEL _cmd)
 {
-    FPSftpTeardown(self, origSftpDisconnect);
+    FPSftpTeardown(self, _cmd, origSftpDisconnect);
 }
 static void FPSftpDisconnectSession(id self, SEL _cmd)
 {
-    FPSftpTeardown(self, origSftpDisconnectSession);
+    FPSftpTeardown(self, _cmd, origSftpDisconnectSession);
 }
 static void FPSftpShutdown(id self, SEL _cmd)
 {
-    FPSftpTeardown(self, origSftpShutdown);
+    FPSftpTeardown(self, _cmd, origSftpShutdown);
 }
 static void FPSftpDisconnectedWithReason(id self, SEL _cmd, id reason, id message)
 {
-    FPSftpTeardown(self, origSftpDisconnectedWithReason);
+    FPSftpTeardown(self, _cmd, origSftpDisconnectedWithReason);
 }
 
 static void FPInstallRuntimeFixes(void)
