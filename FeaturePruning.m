@@ -348,6 +348,31 @@ static void FP_setSections(id self, SEL _cmd, id sections)
     ((void(*)(id, SEL, id))origSetSections)(self, _cmd, FPScrubSidebar(sections));
 }
 
+// FavoritesTableViewController.setSystem: holds 音乐库/回收站/App 管理器/Scripts/挂载点
+static IMP origFavSetSystem;
+
+static void FP_favoritesSetSystem(id self, SEL _cmd, id system)
+{
+    ((void(*)(id, SEL, id))origFavSetSystem)(self, _cmd, FPScrubSidebar(system));
+}
+
+// 'Already connected' is raised by connectWithSuccessBlock:failureBlock:
+// itself (0x1002e1568) whenever the shared connection's socket fd is still
+// open — which is exactly the state we want. Skip the redundant connect and
+// run the success block so the queued operation proceeds on the live session.
+static IMP origSftpConnect;
+
+static void FP_sftpConnect(id self, SEL _cmd, id successBlock, id failureBlock)
+{
+    long sock = (long)((long(*)(id, SEL))objc_msgSend)(self, sel_registerName("socket"));
+    if (sock >= 0) {
+        FSLog(@"[FeaturePruning] SFTP connect skipped (live session)");
+        if (successBlock) ((void (^)())successBlock)();
+        return;
+    }
+    ((void(*)(id, SEL, id, id))origSftpConnect)(self, _cmd, successBlock, failureBlock);
+}
+
 static IMP origTitleForHeader;
 static IMP origNumberOfRows;
 
@@ -453,6 +478,25 @@ static void FPInstallRuntimeFixes(void)
         method_setImplementation(setSectionsMethod, (IMP)FP_setSections);
     } else {
         FSLog(@"[FeaturePruning] LeftPanelTableViewController.setSections: missing");
+    }
+
+    Class favoritesClass = NSClassFromString(@"FavoritesTableViewController");
+    Method favSystemMethod = class_getInstanceMethod(favoritesClass, sel_registerName("setSystem:"));
+    if (favSystemMethod) {
+        origFavSetSystem = method_getImplementation(favSystemMethod);
+        method_setImplementation(favSystemMethod, (IMP)FP_favoritesSetSystem);
+    } else {
+        FSLog(@"[FeaturePruning] FavoritesTableViewController.setSystem: missing");
+    }
+
+    Class sftpConnClass = NSClassFromString(@"DLSFTPConnection");
+    Method sftpConnectMethod = class_getInstanceMethod(sftpConnClass,
+        sel_registerName("connectWithSuccessBlock:failureBlock:"));
+    if (sftpConnectMethod) {
+        origSftpConnect = method_getImplementation(sftpConnectMethod);
+        method_setImplementation(sftpConnectMethod, (IMP)FP_sftpConnect);
+    } else {
+        FSLog(@"[FeaturePruning] DLSFTPConnection.connectWithSuccessBlock: missing");
     }
 
     // the WEBDAV 服务 section is hardcoded; hide it at table-data level
