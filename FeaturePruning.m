@@ -1,6 +1,7 @@
 #include "FSLog.h"
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <objc/message.h>
 #import <unistd.h>
 #import <objc/runtime.h>
 
@@ -208,14 +209,23 @@ static void FPInstallPreferencesHooks(void)
 
 static IMP origTempDirectoryGetter;
 static IMP origDownloadDirectoryGetter;
+static BOOL loggedGetterHit = NO;
 
 static NSString *FP_safeTempDirectory(id self, SEL _cmd)
 {
+    if (!loggedGetterHit) {
+        loggedGetterHit = YES;
+        FSLog(@"[FeaturePruning] TGPreferences tempDirectory getter hooked");
+    }
     return NSTemporaryDirectory();
 }
 
 static NSString *FP_safeDownloadDirectory(id self, SEL _cmd)
 {
+    if (!loggedGetterHit) {
+        loggedGetterHit = YES;
+        FSLog(@"[FeaturePruning] TGPreferences downloadDirectory getter hooked");
+    }
     return FPRedirectedDownloadDirectory();
 }
 
@@ -264,6 +274,41 @@ static void FP_setItems(id self, SEL _cmd, id items)
     ((void(*)(id, SEL, id))origSetItems)(self, _cmd, FPScrubAir(items));
 }
 
+static IMP origTitleForHeader;
+static IMP origNumberOfRows;
+
+static NSString *FP_titleForHeader(id self, SEL _cmd, UITableView *tableView, NSInteger section)
+{
+    NSString *title = ((NSString *(*)(id, SEL, UITableView *, NSInteger))origTitleForHeader)(
+        self, _cmd, tableView, section);
+    if ([title isKindOfClass:[NSString class]] &&
+        [title.lowercaseString containsString:@"webdav"])
+        return nil;
+    return title;
+}
+
+static NSInteger FP_numberOfRows(id self, SEL _cmd, UITableView *tableView, NSInteger section)
+{
+    NSString *title = ((NSString *(*)(id, SEL, UITableView *, NSInteger))origTitleForHeader)(
+        self, _cmd, tableView, section);
+    if ([title isKindOfClass:[NSString class]] &&
+        [title.lowercaseString containsString:@"webdav"])
+        return 0;
+    return ((NSInteger(*)(id, SEL, UITableView *, NSInteger))origNumberOfRows)(
+        self, _cmd, tableView, section);
+}
+
+static IMP origStartSFTPSession;
+
+static void FP_sftpStartSession(id self, SEL _cmd)
+{
+    id session = ((id(*)(id, SEL))objc_msgSend)(self, sel_registerName("session"));
+    FSLog(@"[FeaturePruning] startSFTPSession session=%@ -> %@",
+          session ?: @"nil", session ? @"skip" : @"start");
+    if (session) return;   // redundant re-start raises 'Already connected'
+    ((void(*)(id, SEL))origStartSFTPSession)(self, _cmd);
+}
+
 static void FPInstallRuntimeFixes(void)
 {
     Class prefsClass = NSClassFromString(@"TGPreferences");
@@ -285,17 +330,35 @@ static void FPInstallRuntimeFixes(void)
         method_setImplementation(setItemsMethod, (IMP)FP_setItems);
     }
 
-    // belt and suspenders: stored defaults may still hold unwritable paths
-    void (^ensureWritable)(NSString *, NSString *) = ^(NSString *key, NSString *replacement) {
-        NSString *current = [NSUserDefaults.standardUserDefaults objectForKey:key];
-        if (![current isKindOfClass:[NSString class]] || !current.length) return;
-        [[NSFileManager defaultManager] createDirectoryAtPath:current
-                                  withIntermediateDirectories:YES attributes:nil error:nil];
-        if (access(current.fileSystemRepresentation, W_OK) == 0) return;
-        [NSUserDefaults.standardUserDefaults setObject:replacement forKey:key];
-    };
-    ensureWritable(@"temp-directory", NSTemporaryDirectory());
-    ensureWritable(@"download-directory", FPRedirectedDownloadDirectory());
+    // the WEBDAV 服务 section is hardcoded; hide it at table-data level
+    Class tableClass = settingsClass;
+    Method titleMethod = class_getInstanceMethod(tableClass,
+        sel_registerName("tableView:titleForHeaderInSection:"));
+    Method rowsMethod = class_getInstanceMethod(tableClass,
+        sel_registerName("tableView:numberOfRowsInSection:"));
+    if (titleMethod && rowsMethod) {
+        origTitleForHeader = method_getImplementation(titleMethod);
+        origNumberOfRows = method_getImplementation(rowsMethod);
+        method_setImplementation(titleMethod, (IMP)FP_titleForHeader);
+        method_setImplementation(rowsMethod, (IMP)FP_numberOfRows);
+    }
+
+    // DLSFTPConnection raises 'Already connected' when a second op re-runs
+    // startSFTPSession on a live session; skip the redundant start instead
+    Class sftpClass = NSClassFromString(@"DLSFTPConnection");
+    Method sftpStart = class_getInstanceMethod(sftpClass, sel_registerName("startSFTPSession"));
+    if (sftpStart) {
+        origStartSFTPSession = method_getImplementation(sftpStart);
+        method_setImplementation(sftpStart, (IMP)FP_sftpStartSession);
+    } else {
+        FSLog(@"[FeaturePruning] DLSFTPConnection not found");
+    }
+
+    // POSIX access() lies here: /var/tmp is world-writable but the seatbelt
+    // profile still denies writes outside our container. Force-override both.
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    [defaults setObject:NSTemporaryDirectory() forKey:@"temp-directory"];
+    [defaults setObject:FPRedirectedDownloadDirectory() forKey:@"download-directory"];
 }
 
 __attribute__((constructor)) static void FeaturePruningInit(void)
