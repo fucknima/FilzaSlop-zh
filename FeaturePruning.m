@@ -350,25 +350,57 @@ static void FP_setSections(id self, SEL _cmd, id sections)
 
 // FavoritesTableViewController.setSystem: holds 音乐库/回收站/App 管理器/Scripts/挂载点
 static IMP origFavSetSystem;
+static BOOL loggedSystemDump = NO;
+
+static void FPLogValueStructure(id obj, NSUInteger depth, NSMutableString *out)
+{
+    if (depth > 4 || out.length > 4000) return;
+    if ([obj isKindOfClass:[NSArray class]]) {
+        [out appendFormat:@"%*s[Array x%lu]\n", (int)(depth * 2), "", (unsigned long)obj.count];
+        for (id element in obj) FPLogValueStructure(element, depth + 1, out);
+    } else if ([obj isKindOfClass:[NSDictionary class]]) {
+        [out appendFormat:@"%*s{Dict}\n", (int)(depth * 2), ""];
+        for (id key in obj) {
+            id value = obj[key];
+            if ([value isKindOfClass:[NSArray class]] || [value isKindOfClass:[NSDictionary class]]) {
+                [out appendFormat:@"%*s%@:\n", (int)(depth * 2 + 2), "", key];
+                FPLogValueStructure(value, depth + 1, out);
+            } else {
+                [out appendFormat:@"%*s%@ => %@\n", (int)(depth * 2 + 2), "", key, value];
+            }
+        }
+    } else {
+        NSString *description = [obj description] ?: @"(nil desc)";
+        if (description.length > 200) description = [description substringToIndex:200];
+        [out appendFormat:@"%*s<%@> %@\n", (int)(depth * 2), "", obj.class, description];
+    }
+}
 
 static void FP_favoritesSetSystem(id self, SEL _cmd, id system)
 {
+    if (!loggedSystemDump) {
+        loggedSystemDump = YES;
+        NSMutableString *dump = [NSMutableString stringWithCapacity:512];
+        FPLogValueStructure(system, 0, dump);
+        FSLog(@"[FeaturePruning] favorites system items structure:\n%@", dump);
+    }
     ((void(*)(id, SEL, id))origFavSetSystem)(self, _cmd, FPScrubSidebar(system));
 }
 
-// 'Already connected' is raised by connectWithSuccessBlock:failureBlock:
-// itself (0x1002e1568) whenever the shared connection's socket fd is still
-// open — which is exactly the state we want. Skip the redundant connect and
-// run the success block so the queued operation proceeds on the live session.
+// 'Already connected': connectWithSuccessBlock refuses when the shared
+// connection already has an open socket (browse keeps it open). Rather than
+// guessing block signatures, tear the session down cleanly via _disconnect
+// (the same path the idle timer uses) and let the original method reconnect.
 static IMP origSftpConnect;
 
 static void FP_sftpConnect(id self, SEL _cmd, id successBlock, id failureBlock)
 {
     long sock = (long)((long(*)(id, SEL))objc_msgSend)(self, sel_registerName("socket"));
     if (sock >= 0) {
-        FSLog(@"[FeaturePruning] SFTP connect skipped (live session)");
-        if (successBlock) ((void (^)())successBlock)();
-        return;
+        FSLog(@"[FeaturePruning] SFTP live session found, disconnecting for fresh connect");
+        SEL disconnectSel = sel_registerName("_disconnect");
+        if ([self respondsToSelector:disconnectSel])
+            ((void(*)(id, SEL))objc_msgSend)(self, disconnectSel);
     }
     ((void(*)(id, SEL, id, id))origSftpConnect)(self, _cmd, successBlock, failureBlock);
 }
@@ -397,58 +429,9 @@ static NSInteger FP_numberOfRows(id self, SEL _cmd, UITableView *tableView, NSIn
         self, _cmd, tableView, section);
 }
 
-// NOTE: never message DLSFTPConnection internals here — reading its session
-// getter during connectToAddressAtIndex SEGVs on a half-built object (.ips
-// 2026-08-22). Track started connections in a side table keyed by pointer
-// instead, and clear on every teardown path.
-
-static NSMapTable *FPSftpStartedConnections;
-static IMP origStartSFTPSession;
-static IMP origSftpDisconnect;
-static IMP origSftpDisconnectSession;
-static IMP origSftpShutdown;
-static IMP origSftpDisconnectedWithReason;
-
-static void FPSftpStartSession(id self, SEL _cmd)
-{
-    if (!FPSftpStartedConnections)
-        FPSftpStartedConnections = [NSMapTable weakToStrongObjectsMapTable];
-    @synchronized (FPSftpStartedConnections) {
-        if ([FPSftpStartedConnections objectForKey:self]) {
-            FSLog(@"[FeaturePruning] startSFTPSession skipped (already started)");
-            return;   // second start raises 'Already connected' and kills the op
-        }
-        [FPSftpStartedConnections setObject:@YES forKey:self];
-    }
-    ((void(*)(id, SEL))origStartSFTPSession)(self, _cmd);
-}
-
-static void FPSftpTeardown(id self, SEL _cmd, IMP orig)
-{
-    if (FPSftpStartedConnections) {
-        @synchronized (FPSftpStartedConnections) {
-            [FPSftpStartedConnections removeObjectForKey:self];
-        }
-    }
-    ((void(*)(id, SEL))orig)(self, _cmd);
-}
-
-static void FPSftpDisconnect(id self, SEL _cmd)
-{
-    FPSftpTeardown(self, _cmd, origSftpDisconnect);
-}
-static void FPSftpDisconnectSession(id self, SEL _cmd)
-{
-    FPSftpTeardown(self, _cmd, origSftpDisconnectSession);
-}
-static void FPSftpShutdown(id self, SEL _cmd)
-{
-    FPSftpTeardown(self, _cmd, origSftpShutdown);
-}
-static void FPSftpDisconnectedWithReason(id self, SEL _cmd, id reason, id message)
-{
-    FPSftpTeardown(self, _cmd, origSftpDisconnectedWithReason);
-}
+// NOTE: never message DLSFTPConnection internals beyond _disconnect/socket —
+// reading its session getter during connectToAddressAtIndex SEGVs on a
+// half-built object (.ips 2026-08-22).
 
 static void FPInstallRuntimeFixes(void)
 {
@@ -510,24 +493,6 @@ static void FPInstallRuntimeFixes(void)
         origNumberOfRows = method_getImplementation(rowsMethod);
         method_setImplementation(titleMethod, (IMP)FP_titleForHeader);
         method_setImplementation(rowsMethod, (IMP)FP_numberOfRows);
-    }
-
-    Class sftpClass = NSClassFromString(@"DLSFTPConnection");
-    struct { const char *name; IMP *origSlot; IMP replacement; } sftpHooks[] = {
-        {"startSFTPSession", &origStartSFTPSession, (IMP)FPSftpStartSession},
-        {"_disconnect", &origSftpDisconnect, (IMP)FPSftpDisconnect},
-        {"disconnectSession", &origSftpDisconnectSession, (IMP)FPSftpDisconnectSession},
-        {"shutdownSftp", &origSftpShutdown, (IMP)FPSftpShutdown},
-        {"disconnectedWithReason:message:", &origSftpDisconnectedWithReason, (IMP)FPSftpDisconnectedWithReason},
-    };
-    for (unsigned i = 0; i < sizeof(sftpHooks) / sizeof(sftpHooks[0]); ++i) {
-        Method m = class_getInstanceMethod(sftpClass, sel_registerName(sftpHooks[i].name));
-        if (!m) {
-            FSLog(@"[FeaturePruning] DLSFTPConnection.%s missing", sftpHooks[i].name);
-            continue;
-        }
-        *sftpHooks[i].origSlot = method_getImplementation(m);
-        method_setImplementation(m, sftpHooks[i].replacement);
     }
 
     // POSIX access() lies here: /var/tmp is world-writable but the seatbelt
