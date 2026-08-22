@@ -356,12 +356,14 @@ static void FPLogValueStructure(id obj, NSUInteger depth, NSMutableString *out)
 {
     if (depth > 4 || out.length > 4000) return;
     if ([obj isKindOfClass:[NSArray class]]) {
-        [out appendFormat:@"%*s[Array x%lu]\n", (int)(depth * 2), "", (unsigned long)obj.count];
-        for (id element in obj) FPLogValueStructure(element, depth + 1, out);
+        NSArray *array = (NSArray *)obj;
+        [out appendFormat:@"%*s[Array x%lu]\n", (int)(depth * 2), "", (unsigned long)array.count];
+        for (id element in array) FPLogValueStructure(element, depth + 1, out);
     } else if ([obj isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dict = (NSDictionary *)obj;
         [out appendFormat:@"%*s{Dict}\n", (int)(depth * 2), ""];
-        for (id key in obj) {
-            id value = obj[key];
+        for (id key in dict) {
+            id value = dict[key];
             if ([value isKindOfClass:[NSArray class]] || [value isKindOfClass:[NSDictionary class]]) {
                 [out appendFormat:@"%*s%@:\n", (int)(depth * 2 + 2), "", key];
                 FPLogValueStructure(value, depth + 1, out);
@@ -372,7 +374,7 @@ static void FPLogValueStructure(id obj, NSUInteger depth, NSMutableString *out)
     } else {
         NSString *description = [obj description] ?: @"(nil desc)";
         if (description.length > 200) description = [description substringToIndex:200];
-        [out appendFormat:@"%*s<%@> %@\n", (int)(depth * 2), "", obj.class, description];
+        [out appendFormat:@"%*s<%@> %@\n", (int)(depth * 2), "", [obj class], description];
     }
 }
 
