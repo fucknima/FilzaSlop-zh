@@ -389,6 +389,33 @@ static void FP_favoritesSetSystem(id self, SEL _cmd, id system)
     ((void(*)(id, SEL, id))origFavSetSystem)(self, _cmd, FPScrubSidebar(system));
 }
 
+#pragma mark - favorites page state diagnostics
+
+@interface FavoritesTableViewController : UIViewController
+@property(nonatomic, strong) id links;
+@property(nonatomic, strong) id system;
+@property(nonatomic, strong) id clouds;
+@end
+
+static IMP origFavViewDidLoad;
+static BOOL loggedFavoritesState = NO;
+
+static void FP_favoritesViewDidLoad(id self, SEL _cmd)
+{
+    ((void(*)(id, SEL))origFavViewDidLoad)(self, _cmd);
+    if (loggedFavoritesState) return;
+    loggedFavoritesState = YES;
+    FavoritesTableViewController *favorites = (FavoritesTableViewController *)self;
+    NSMutableString *dump = [NSMutableString stringWithCapacity:1024];
+    [dump appendString:@"== links ==\n"];
+    FPLogValueStructure(favorites.links, 1, dump);
+    [dump appendString:@"== system ==\n"];
+    FPLogValueStructure(favorites.system, 1, dump);
+    [dump appendString:@"== clouds ==\n"];
+    FPLogValueStructure(favorites.clouds, 1, dump);
+    FSLog(@"[FeaturePruning] favorites page state:\n%@", dump);
+}
+
 // 'Already connected': connectWithSuccessBlock refuses when the shared
 // connection already has an open socket (browse keeps it open). Rather than
 // guessing block signatures, tear the session down cleanly via _disconnect
@@ -472,6 +499,11 @@ static void FPInstallRuntimeFixes(void)
         method_setImplementation(favSystemMethod, (IMP)FP_favoritesSetSystem);
     } else {
         FSLog(@"[FeaturePruning] FavoritesTableViewController.setSystem: missing");
+    }
+    Method favLoadMethod = class_getInstanceMethod(favoritesClass, sel_registerName("viewDidLoad"));
+    if (favLoadMethod) {
+        origFavViewDidLoad = method_getImplementation(favLoadMethod);
+        method_setImplementation(favLoadMethod, (IMP)FP_favoritesViewDidLoad);
     }
 
     Class sftpConnClass = NSClassFromString(@"DLSFTPConnection");
